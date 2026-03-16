@@ -325,7 +325,7 @@ const TIKTOK_CLIENT_KEY = process.env.TIKTOK_CLIENT_KEY || "";
 const TIKTOK_CLIENT_SECRET = process.env.TIKTOK_CLIENT_SECRET || "";
 const TIKTOK_OAUTH_REDIRECT_URI =
   process.env.TIKTOK_OAUTH_REDIRECT_URI ||
-  "https://creative-dusk-f63fdf.netlify.app";
+  "";
   
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
