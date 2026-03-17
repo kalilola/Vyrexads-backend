@@ -390,135 +390,543 @@ async function supabaseUpsertProviderTokenVault(params: {
 }
 
 
-async function supabaseUpsertTikTokConnection(row: any) {
+type TikTokTokenRow = {
+  id: string;
+  profile_id: string;
+  owner_id: string;
+  provider: string;
+  access_token: string;
+  refresh_token: string | null;
+  access_token_expires_at: string | null;
+  refresh_token_expires_at: string | null;
+  raw_token?: any;
+};
+
+type TikTokUserInfoResponse = {
+  data?: {
+    user?: {
+      open_id?: string;
+      union_id?: string;
+      display_name?: string;
+      avatar_url?: string;
+      avatar_url_100?: string;
+      avatar_large_url?: string;
+      bio_description?: string;
+      profile_deep_link?: string;
+      profile_web_link?: string;
+      is_verified?: boolean;
+      follower_count?: number;
+      following_count?: number;
+      likes_count?: number;
+      video_count?: number;
+    };
+  };
+  error?: {
+    code?: string;
+    message?: string;
+    log_id?: string;
+  };
+};
+
+type TikTokVideo = {
+  id: string;
+  title?: string;
+  video_description?: string;
+  duration?: number;
+  cover_image_url?: string;
+  share_url?: string;
+  embed_link?: string;
+  embed_html?: string;
+  create_time?: number;
+  like_count?: number;
+  comment_count?: number;
+  share_count?: number;
+  view_count?: number;
+  width?: number;
+  height?: number;
+};
+
+type TikTokVideoListResponse = {
+  data?: {
+    videos?: TikTokVideo[];
+    cursor?: number;
+    has_more?: boolean;
+  };
+  error?: {
+    code?: string;
+    message?: string;
+    log_id?: string;
+  };
+};
+
+function adminHeaders(extra?: Record<string, string>) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in backend env");
   }
 
-  const url = `${SUPABASE_URL}/rest/v1/tiktok_connections?on_conflict=owner_id,open_id`;
+  return {
+    apikey: SUPABASE_SERVICE_ROLE_KEY,
+    Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+    "Content-Type": "application/json",
+    ...extra,
+  };
+}
 
+async function supabaseAdminInsert(path: string, rows: any[]) {
+  const url = `${SUPABASE_URL}/rest/v1/${path}`;
   const res = await fetch(url, {
     method: "POST",
-    headers: {
-      apikey: SUPABASE_SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: "resolution=merge-duplicates,return=minimal",
-    },
-    body: JSON.stringify([row]),
+    headers: adminHeaders({
+      Prefer: "return=minimal",
+    }),
+    body: JSON.stringify(rows),
   });
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Supabase upsert tiktok_connections failed: ${res.status} ${text}`);
+    throw new Error(`Supabase admin insert failed: ${res.status} ${text}`);
   }
 }
 
-/**
- * START: redirect user to Google consent screen
- * Usage:
- *   http://localhost:3001/auth/google-ads/start?owner_id=xxx&return_to=http://localhost:8080/analytics
- */
-app.get("/auth/google-ads/start", async (req, res) => {
-  try {
-    const owner_id = String(req.query.owner_id || "");
-    const return_to = String(req.query.return_to || "http://localhost:8080");
+async function supabaseAdminUpsertRows(path: string, rows: any[]) {
+  const url = `${SUPABASE_URL}/rest/v1/${path}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: adminHeaders({
+      Prefer: "resolution=merge-duplicates,return=representation",
+    }),
+    body: JSON.stringify(rows),
+  });
 
-    if (!owner_id) return res.status(400).send("Missing owner_id");
-    if (!GOOGLE_OAUTH_CLIENT_ID || !GOOGLE_OAUTH_CLIENT_SECRET) {
-      return res.status(500).send("Missing Google OAuth env vars");
-    }
-
-    const state = signState({
-      owner_id,
-      return_to,
-      t: Date.now(),
-    });
-
-    const scope = "https://www.googleapis.com/auth/adwords";
-
-    const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-    authUrl.searchParams.set("client_id", GOOGLE_OAUTH_CLIENT_ID);
-    authUrl.searchParams.set("redirect_uri", GOOGLE_OAUTH_REDIRECT_URI);
-    authUrl.searchParams.set("response_type", "code");
-    authUrl.searchParams.set("scope", scope);
-    authUrl.searchParams.set("access_type", "offline");
-    authUrl.searchParams.set("prompt", "consent");
-    authUrl.searchParams.set("state", state);
-
-    return res.redirect(authUrl.toString());
-  } catch (e: any) {
-    console.error("[google-ads][start] error:", e);
-    return res.status(500).send("Google Ads OAuth start error");
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Supabase admin upsert failed: ${res.status} ${text}`);
   }
-});
 
-/**
- * CALLBACK: Google redirects here with ?code=...&state=...
- */
-app.get("/auth/google-ads/callback", async (req, res) => {
   try {
-    const code = String(req.query.code || "");
-    const state = String(req.query.state || "");
+    return text ? JSON.parse(text) : [];
+  } catch {
+    return [];
+  }
+}
 
-    if (!code) return res.status(400).send("Missing code");
-    const parsed = verifyState(state);
-    if (!parsed) return res.status(400).send("Invalid state");
+async function supabaseAdminPatch(path: string, patch: any) {
+  const url = `${SUPABASE_URL}/rest/v1/${path}`;
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: adminHeaders({
+      Prefer: "return=representation",
+    }),
+    body: JSON.stringify(patch),
+  });
 
-    const owner_id = String(parsed.owner_id || "");
-    const return_to = String(parsed.return_to || "http://localhost:8080");
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Supabase admin patch failed: ${res.status} ${text}`);
+  }
 
-    // Exchange code for tokens
-    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        code,
-        client_id: GOOGLE_OAUTH_CLIENT_ID,
-        client_secret: GOOGLE_OAUTH_CLIENT_SECRET,
-        redirect_uri: GOOGLE_OAUTH_REDIRECT_URI,
-        grant_type: "authorization_code",
-      }),
-    });
+  try {
+    return text ? JSON.parse(text) : [];
+  } catch {
+    return [];
+  }
+}
 
-    if (!tokenRes.ok) {
-      const text = await tokenRes.text();
-      console.error("[google-ads][callback] token exchange failed:", tokenRes.status, text);
-      const u = new URL(return_to);
-      u.searchParams.set("google_ads", "error");
-      return res.redirect(u.toString());
+async function supabaseAdminSelectSingleRow<T>(path: string): Promise<T | null> {
+  const url = `${SUPABASE_URL}/rest/v1/${path}`;
+  const res = await fetch(url, {
+    method: "GET",
+    headers: adminHeaders(),
+  });
+
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Supabase admin select failed: ${res.status} ${text}`);
+  }
+
+  let json: any = [];
+  try {
+    json = text ? JSON.parse(text) : [];
+  } catch {
+    json = [];
+  }
+
+  return Array.isArray(json) ? (json[0] || null) : (json || null);
+}
+
+function toIsoFromUnixSeconds(value?: number | null): string | null {
+  if (!value) return null;
+  return new Date(value * 1000).toISOString();
+}
+
+function isExpiringSoon(iso: string | null | undefined, minutes = 10) {
+  if (!iso) return true;
+  const exp = Date.parse(iso);
+  if (!Number.isFinite(exp)) return true;
+  return exp - Date.now() <= minutes * 60 * 1000;
+}
+
+async function refreshTikTokTokenIfNeeded(tokenRow: TikTokTokenRow): Promise<TikTokTokenRow> {
+  if (!isExpiringSoon(tokenRow.access_token_expires_at, 10)) {
+    return tokenRow;
+  }
+
+  if (!tokenRow.refresh_token) {
+    throw new Error("TikTok refresh_token manquant.");
+  }
+
+  const tokenRes = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      client_key: TIKTOK_CLIENT_KEY,
+      client_secret: TIKTOK_CLIENT_SECRET,
+      grant_type: "refresh_token",
+      refresh_token: tokenRow.refresh_token,
+    }),
+  });
+
+  const tokenText = await tokenRes.text();
+  let tokenJson: any = null;
+  try {
+    tokenJson = tokenText ? JSON.parse(tokenText) : null;
+  } catch {
+    tokenJson = null;
+  }
+
+  if (!tokenRes.ok || tokenJson?.error) {
+    throw new Error(`TikTok refresh token failed: ${tokenRes.status} ${tokenText || "unknown error"}`);
+  }
+
+  const nextAccessToken = String(tokenJson?.access_token || "");
+  const nextRefreshToken = String(tokenJson?.refresh_token || tokenRow.refresh_token || "");
+
+  const access_token_expires_at = tokenJson?.expires_in
+    ? new Date(Date.now() + Number(tokenJson.expires_in) * 1000).toISOString()
+    : null;
+
+  const refresh_token_expires_at = tokenJson?.refresh_expires_in
+    ? new Date(Date.now() + Number(tokenJson.refresh_expires_in) * 1000).toISOString()
+    : tokenRow.refresh_token_expires_at;
+
+  await supabaseAdminPatch(
+    `private.tiktok_connection_tokens?id=eq.${encodeURIComponent(tokenRow.id)}`,
+    {
+      access_token: nextAccessToken,
+      refresh_token: nextRefreshToken,
+      access_token_expires_at,
+      refresh_token_expires_at,
+      raw_token: tokenJson ?? {},
+      updated_at: new Date().toISOString(),
     }
+  );
 
-    const tokenJson = await tokenRes.json();
-    // tokenJson includes: access_token, expires_in, refresh_token (first time), scope, token_type
-    const expires_at = tokenJson.expires_in
-      ? new Date(Date.now() + Number(tokenJson.expires_in) * 1000).toISOString()
-      : null;
+  return {
+    ...tokenRow,
+    access_token: nextAccessToken,
+    refresh_token: nextRefreshToken,
+    access_token_expires_at,
+    refresh_token_expires_at,
+    raw_token: tokenJson ?? {},
+  };
+}
 
-    await supabaseUpsertProviderTokenVault({
-      owner_id,
-      provider: "google_ads",
-      token: {
-        ...tokenJson,
-        expires_at,
+async function fetchTikTokUserInfo(accessToken: string): Promise<TikTokUserInfoResponse> {
+  const userFields = [
+    "open_id",
+    "union_id",
+    "display_name",
+    "avatar_url",
+    "avatar_url_100",
+    "avatar_large_url",
+    "bio_description",
+    "profile_deep_link",
+    "profile_web_link",
+    "is_verified",
+    "follower_count",
+    "following_count",
+    "likes_count",
+    "video_count",
+  ].join(",");
+
+  const userRes = await fetch(
+    `https://open.tiktokapis.com/v2/user/info/?fields=${encodeURIComponent(userFields)}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
       },
-    });
+    }
+  );
 
-    const u = new URL(return_to);
-    u.searchParams.set("google_ads", "connected");
-    return res.redirect(u.toString());
-  } catch (e: any) {
-    console.error("[google-ads][callback] error:", e);
-    const return_to = "http://localhost:8080";
-    const u = new URL(return_to);
-    u.searchParams.set("google_ads", "error");
-    return res.redirect(u.toString());
+  const userText = await userRes.text();
+  let userJson: any = null;
+  try {
+    userJson = userText ? JSON.parse(userText) : null;
+  } catch {
+    userJson = null;
   }
-});
 
+  if (!userRes.ok || userJson?.error) {
+    throw new Error(`TikTok user/info failed: ${userRes.status} ${userText}`);
+  }
+
+  return userJson as TikTokUserInfoResponse;
+}
+
+
+async function fetchTikTokVideos(accessToken: string): Promise<TikTokVideo[]> {
+  const videoFields =
+    "id,title,video_description,duration,cover_image_url,embed_html,embed_link,like_count,comment_count,share_count,view_count,create_time";
+
+  let allVideos: TikTokVideo[] = [];
+  let cursor: number | undefined = undefined;
+  let hasMore: boolean = true;
+
+  while (hasMore) {
+    const videosRes: Response = await fetch(
+      `https://open.tiktokapis.com/v2/video/list/?fields=${encodeURIComponent(videoFields)}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          max_count: 20,
+          ...(typeof cursor === "number" ? { cursor } : {}),
+        }),
+      }
+    );
+
+    const videosText: string = await videosRes.text();
+
+    let videosJson: TikTokVideoListResponse | null = null;
+    try {
+      videosJson = videosText ? (JSON.parse(videosText) as TikTokVideoListResponse) : null;
+    } catch {
+      videosJson = null;
+    }
+
+    if (!videosRes.ok || videosJson?.error) {
+      throw new Error(`TikTok video/list failed: ${videosRes.status} ${videosText}`);
+    }
+
+    const chunk: TikTokVideo[] = Array.isArray(videosJson?.data?.videos)
+      ? videosJson.data!.videos!
+      : [];
+
+    allVideos = allVideos.concat(chunk);
+    hasMore = Boolean(videosJson?.data?.has_more);
+    cursor =
+      typeof videosJson?.data?.cursor === "number"
+        ? videosJson.data.cursor
+        : undefined;
+  }
+
+  return allVideos;
+}
+
+async function upsertTikTokProfileAndTokens(params: {
+  owner_id: string;
+  open_id: string;
+  union_id: string | null;
+  scope: string[];
+  access_token: string;
+  refresh_token: string | null;
+  access_token_expires_at: string | null;
+  refresh_token_expires_at: string | null;
+  raw_token: any;
+  userInfo: TikTokUserInfoResponse;
+}) {
+  const user = params.userInfo?.data?.user || {};
+
+  const profileRows = await supabaseAdminUpsertRows(
+    "tiktok_profiles?on_conflict=owner_id,open_id",
+    [
+      {
+        owner_id: params.owner_id,
+        provider: "tiktok",
+        open_id: params.open_id,
+        union_id: params.union_id,
+        scope: params.scope,
+        display_name: user?.display_name ?? null,
+        avatar_url: user?.avatar_url ?? null,
+        avatar_url_100: user?.avatar_url_100 ?? null,
+        avatar_large_url: user?.avatar_large_url ?? null,
+        profile_deep_link: user?.profile_deep_link ?? null,
+        profile_web_link: user?.profile_web_link ?? null,
+        bio_description: user?.bio_description ?? null,
+        is_verified: user?.is_verified ?? null,
+        follower_count: user?.follower_count ?? null,
+        following_count: user?.following_count ?? null,
+        likes_count: user?.likes_count ?? null,
+        video_count: user?.video_count ?? null,
+        raw_user: params.userInfo ?? {},
+        last_synced_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ]
+  );
+
+  const profile = Array.isArray(profileRows) ? profileRows[0] : null;
+  if (!profile?.id) {
+    throw new Error("Impossible de récupérer l'id du profil TikTok après upsert.");
+  }
+
+  await supabaseAdminUpsertRows(
+    "private.tiktok_connection_tokens?on_conflict=profile_id",
+    [
+      {
+        profile_id: profile.id,
+        owner_id: params.owner_id,
+        provider: "tiktok",
+        access_token: params.access_token,
+        refresh_token: params.refresh_token,
+        access_token_expires_at: params.access_token_expires_at,
+        refresh_token_expires_at: params.refresh_token_expires_at,
+        raw_token: params.raw_token ?? {},
+        updated_at: new Date().toISOString(),
+      },
+    ]
+  );
+
+  await supabaseAdminInsert("tiktok_profile_snapshots", [
+    {
+      profile_id: profile.id,
+      owner_id: params.owner_id,
+      provider: "tiktok",
+      snapshot_at: new Date().toISOString(),
+      follower_count: user?.follower_count ?? null,
+      following_count: user?.following_count ?? null,
+      likes_count: user?.likes_count ?? null,
+      video_count: user?.video_count ?? null,
+      raw_user: params.userInfo ?? {},
+    },
+  ]);
+
+  return profile;
+}
+
+async function upsertTikTokVideosAndSnapshots(params: {
+  owner_id: string;
+  profile_id: string;
+  videos: TikTokVideo[];
+}) {
+  for (const video of params.videos) {
+    const videoRows = await supabaseAdminUpsertRows(
+      "tiktok_videos?on_conflict=profile_id,tiktok_video_id",
+      [
+        {
+          profile_id: params.profile_id,
+          owner_id: params.owner_id,
+          provider: "tiktok",
+          tiktok_video_id: video.id,
+          title: video.title ?? null,
+          video_description: video.video_description ?? null,
+          create_time: toIsoFromUnixSeconds(video.create_time),
+          duration_seconds: video.duration ?? null,
+          width: video.width ?? null,
+          height: video.height ?? null,
+          cover_image_url: video.cover_image_url ?? null,
+          share_url: video.share_url ?? null,
+          embed_link: video.embed_link ?? null,
+          embed_html: video.embed_html ?? null,
+          like_count: video.like_count ?? null,
+          comment_count: video.comment_count ?? null,
+          share_count: video.share_count ?? null,
+          view_count: video.view_count ?? null,
+          raw_video: video,
+          last_synced_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      ]
+    );
+
+    const savedVideo = Array.isArray(videoRows) ? videoRows[0] : null;
+    if (!savedVideo?.id) {
+      throw new Error(`Impossible de récupérer l'id de la vidéo TikTok ${video.id}`);
+    }
+
+    await supabaseAdminInsert("tiktok_video_snapshots", [
+      {
+        video_id: savedVideo.id,
+        profile_id: params.profile_id,
+        owner_id: params.owner_id,
+        provider: "tiktok",
+        snapshot_at: new Date().toISOString(),
+        like_count: video.like_count ?? null,
+        comment_count: video.comment_count ?? null,
+        share_count: video.share_count ?? null,
+        view_count: video.view_count ?? null,
+        raw_video: video,
+      },
+    ]);
+  }
+}
+
+async function getTikTokTokenByProfileId(profile_id: string): Promise<TikTokTokenRow | null> {
+  return await supabaseAdminSelectSingleRow<TikTokTokenRow>(
+    `private.tiktok_connection_tokens?select=id,profile_id,owner_id,provider,access_token,refresh_token,access_token_expires_at,refresh_token_expires_at,raw_token&profile_id=eq.${encodeURIComponent(profile_id)}`
+  );
+}
+
+async function syncTikTokDataForProfile(profile_id: string) {
+  const tokenRow = await getTikTokTokenByProfileId(profile_id);
+  if (!tokenRow) {
+    throw new Error(`Aucun token TikTok trouvé pour profile_id=${profile_id}`);
+  }
+
+  const freshToken = await refreshTikTokTokenIfNeeded(tokenRow);
+  const userInfo = await fetchTikTokUserInfo(freshToken.access_token);
+  const videos = await fetchTikTokVideos(freshToken.access_token);
+
+  const user = userInfo?.data?.user || {};
+  const finalOpenId = user?.open_id || null;
+  const finalUnionId = user?.union_id || null;
+
+  if (!finalOpenId) {
+    throw new Error("open_id manquant dans la réponse TikTok.");
+  }
+
+  const rawScope = freshToken.raw_token?.scope;
+  const scope: string[] =
+    typeof rawScope === "string"
+      ? rawScope.split(",").map((s: string) => s.trim()).filter(Boolean)
+      : Array.isArray(rawScope)
+      ? rawScope
+      : [];
+
+  const profile = await upsertTikTokProfileAndTokens({
+    owner_id: freshToken.owner_id,
+    open_id: finalOpenId,
+    union_id: finalUnionId,
+    scope,
+    access_token: freshToken.access_token,
+    refresh_token: freshToken.refresh_token,
+    access_token_expires_at: freshToken.access_token_expires_at,
+    refresh_token_expires_at: freshToken.refresh_token_expires_at,
+    raw_token: freshToken.raw_token ?? {},
+    userInfo,
+  });
+
+  await upsertTikTokVideosAndSnapshots({
+    owner_id: freshToken.owner_id,
+    profile_id: profile.id,
+    videos,
+  });
+
+  return {
+    ok: true,
+    profile_id: profile.id,
+    videos_count: videos.length,
+  };
+}
 
 // ==============================
-// TikTok OAuth2
+// TikTok OAuth2 + Sync + Storage
 // ==============================
 
 /**
@@ -552,12 +960,7 @@ app.get("/auth/tiktok/start", async (req, res) => {
     authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set(
       "scope",
-      [
-        "user.info.basic",
-        "user.info.profile",
-        "user.info.stats",
-        "video.list",
-      ].join(",")
+      ["user.info.basic", "user.info.profile", "user.info.stats", "video.list"].join(",")
     );
     authUrl.searchParams.set("redirect_uri", TIKTOK_OAUTH_REDIRECT_URI);
     authUrl.searchParams.set("state", state);
@@ -580,16 +983,19 @@ app.get("/auth/tiktok/callback", async (req, res) => {
     const state = String(req.query.state || "");
 
     if (!code) return res.status(400).send("Missing code");
+
     const parsed = verifyState(state);
     if (!parsed) return res.status(400).send("Invalid state");
-    const code_verifier = String(parsed.code_verifier || "");
-    if (!code_verifier) return res.status(400).send("Missing code_verifier");
-        const owner_id = String(parsed.owner_id || "");
-        const return_to = String(parsed.return_to || "http://localhost:8080");
 
-    // 1) Exchange code for tokens
+    const code_verifier = String(parsed.code_verifier || "");
+    const owner_id = String(parsed.owner_id || "");
+    const return_to = String(parsed.return_to || "http://localhost:8080");
+
+    if (!code_verifier) return res.status(400).send("Missing code_verifier");
+    if (!owner_id) return res.status(400).send("Missing owner_id");
+
     const tokenRes = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
-      method: "POST", 
+      method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
       },
@@ -618,10 +1024,10 @@ app.get("/auth/tiktok/callback", async (req, res) => {
       return res.redirect(u.toString());
     }
 
-    const access_token = tokenJson?.access_token || "";
-    const refresh_token = tokenJson?.refresh_token || null;
-    const open_id_from_token = tokenJson?.open_id || null;
-    const union_id_from_token = tokenJson?.union_id || null;
+    const access_token = String(tokenJson?.access_token || "");
+    const refresh_token = tokenJson?.refresh_token ? String(tokenJson.refresh_token) : null;
+    const open_id_from_token = tokenJson?.open_id ? String(tokenJson.open_id) : null;
+    const union_id_from_token = tokenJson?.union_id ? String(tokenJson.union_id) : null;
 
     const access_token_expires_at = tokenJson?.expires_in
       ? new Date(Date.now() + Number(tokenJson.expires_in) * 1000).toISOString()
@@ -636,83 +1042,15 @@ app.get("/auth/tiktok/callback", async (req, res) => {
         ? tokenJson.scope.split(",").map((s: string) => s.trim()).filter(Boolean)
         : [];
 
-    // 2) Fetch user info
-    const userFields = [
-      "open_id",
-      "union_id",
-      "display_name",
-      "avatar_url",
-      "avatar_url_100",
-      "avatar_large_url",
-      "bio_description",
-      "profile_deep_link",
-      "profile_web_link",
-      "is_verified",
-      "follower_count",
-      "following_count",
-      "likes_count",
-      "video_count",
-    ].join(",");
-
-    const userRes = await fetch(
-      `https://open.tiktokapis.com/v2/user/info/?fields=${encodeURIComponent(userFields)}`,
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${access_token}`,
-        },
-      }
-    );
-
-    const userText = await userRes.text();
-    let userJson: any = null;
-    try {
-      userJson = userText ? JSON.parse(userText) : null;
-    } catch {
-      userJson = null;
+    if (!access_token) {
+      const u = new URL(return_to);
+      u.searchParams.set("tiktok", "error");
+      return res.redirect(u.toString());
     }
 
-    const user = userJson?.data?.user || userJson?.data || {};
-
-    // 3) Fetch public videos
-    const videoFields = [
-      "id",
-      "title",
-      "video_description",
-      "duration",
-      "cover_image_url",
-      "share_url",
-      "embed_link",
-      "create_time",
-      "like_count",
-      "comment_count",
-      "share_count",
-      "view_count",
-    ].join(",");
-
-    const videosRes = await fetch(
-      `https://open.tiktokapis.com/v2/video/list/?fields=${encodeURIComponent(videoFields)}`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${access_token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          max_count: 20,
-        }),
-      }
-    );
-
-    const videosText = await videosRes.text();
-    let videosJson: any = null;
-    try {
-      videosJson = videosText ? JSON.parse(videosText) : null;
-    } catch {
-      videosJson = null;
-    }
-
-    const videos = videosJson?.data?.videos || [];
+    const userInfo = await fetchTikTokUserInfo(access_token);
+    const user = userInfo?.data?.user || {};
+    const videos = await fetchTikTokVideos(access_token);
 
     const finalOpenId = user?.open_id || open_id_from_token;
     const finalUnionId = user?.union_id || union_id_from_token;
@@ -724,42 +1062,28 @@ app.get("/auth/tiktok/callback", async (req, res) => {
       return res.redirect(u.toString());
     }
 
-    // 4) Save in DB
-    await supabaseUpsertTikTokConnection({
+    const profile = await upsertTikTokProfileAndTokens({
       owner_id,
-      provider: "tiktok",
       open_id: finalOpenId,
       union_id: finalUnionId,
-
+      scope,
       access_token,
       refresh_token,
       access_token_expires_at,
       refresh_token_expires_at,
-      scope,
-
-      display_name: user?.display_name ?? null,
-      avatar_url: user?.avatar_url ?? null,
-      avatar_url_100: user?.avatar_url_100 ?? null,
-      avatar_large_url: user?.avatar_large_url ?? null,
-
-      profile_deep_link: user?.profile_deep_link ?? null,
-      profile_web_link: user?.profile_web_link ?? null,
-      bio_description: user?.bio_description ?? null,
-      is_verified: user?.is_verified ?? null,
-
-      follower_count: user?.follower_count ?? null,
-      following_count: user?.following_count ?? null,
-      likes_count: user?.likes_count ?? null,
-      video_count: user?.video_count ?? null,
-
-      videos,
-      raw_user: userJson ?? {},
       raw_token: tokenJson ?? {},
-      last_synced_at: new Date().toISOString(),
+      userInfo,
+    });
+
+    await upsertTikTokVideosAndSnapshots({
+      owner_id,
+      profile_id: profile.id,
+      videos,
     });
 
     const u = new URL(return_to);
     u.searchParams.set("tiktok", "connected");
+    u.searchParams.set("tiktok_profile_id", String(profile.id));
     return res.redirect(u.toString());
   } catch (e: any) {
     console.error("[tiktok][callback] error:", e);
@@ -767,6 +1091,28 @@ app.get("/auth/tiktok/callback", async (req, res) => {
     const u = new URL(return_to);
     u.searchParams.set("tiktok", "error");
     return res.redirect(u.toString());
+  }
+});
+
+/**
+ * Manual sync route
+ * POST /api/tiktok/sync
+ * body: { profile_id: "..." }
+ */
+app.post("/api/tiktok/sync", requireAuth, async (req, res) => {
+  try {
+    const profile_id = String(req.body?.profile_id || "");
+    if (!profile_id) {
+      return res.status(400).json({ error: "Missing profile_id" });
+    }
+
+    const result = await syncTikTokDataForProfile(profile_id);
+    return res.json(result);
+  } catch (e: any) {
+    console.error("[tiktok][sync] error:", e);
+    return res.status(500).json({
+      error: e?.message || "TikTok sync error",
+    });
   }
 });
 
