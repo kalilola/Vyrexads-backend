@@ -554,6 +554,90 @@ async function supabaseAdminSelectSingleRow<T>(path: string): Promise<T | null> 
   return Array.isArray(json) ? (json[0] || null) : (json || null);
 }
 
+
+async function supabaseAdminSelectRows<T>(path: string): Promise<T[]> {
+  const url = `${SUPABASE_URL}/rest/v1/${path}`;
+  const res = await fetch(url, {
+    method: "GET",
+    headers: adminHeaders(),
+  });
+
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Supabase admin select rows failed: ${res.status} ${text}`);
+  }
+
+  try {
+    const json = text ? JSON.parse(text) : [];
+    return Array.isArray(json) ? json : [];
+  } catch {
+    return [];
+  }
+}
+
+async function supabaseAdminDelete(path: string) {
+  const url = `${SUPABASE_URL}/rest/v1/${path}`;
+  const res = await fetch(url, {
+    method: "DELETE",
+    headers: adminHeaders({
+      Prefer: "return=minimal",
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Supabase admin delete failed: ${res.status} ${text}`);
+  }
+}
+
+async function getTikTokProfileByOwnerId(owner_id: string) {
+  return await supabaseAdminSelectSingleRow<{
+    id: string;
+    owner_id: string;
+    display_name: string | null;
+    open_id: string;
+    last_synced_at: string | null;
+  }>(
+    `tiktok_profiles?select=id,owner_id,display_name,open_id,last_synced_at&owner_id=eq.${encodeURIComponent(
+      owner_id
+    )}&order=updated_at.desc&limit=1`
+  );
+}
+
+async function getAllTikTokProfiles() {
+  return await supabaseAdminSelectRows<{
+    id: string;
+    owner_id: string;
+    display_name: string | null;
+    open_id: string;
+    last_synced_at: string | null;
+  }>(
+    `tiktok_profiles?select=id,owner_id,display_name,open_id,last_synced_at&order=updated_at.desc`
+  );
+}
+
+async function markMissingTikTokVideosInactive(params: {
+  profile_id: string;
+  currentTikTokVideoIds: string[];
+}) {
+  const existingRows = await supabaseAdminSelectRows<{
+    id: string;
+    tiktok_video_id: string;
+  }>(
+    `tiktok_videos?select=id,tiktok_video_id&profile_id=eq.${encodeURIComponent(params.profile_id)}`
+  );
+
+  const keep = new Set(params.currentTikTokVideoIds.map(String));
+  const toDelete = existingRows.filter((row) => !keep.has(String(row.tiktok_video_id)));
+
+  for (const row of toDelete) {
+    await supabaseAdminDelete(`tiktok_videos?id=eq.${encodeURIComponent(row.id)}`);
+  }
+}
+
+
+
+
 function toIsoFromUnixSeconds(value?: number | null): string | null {
   if (!value) return null;
   return new Date(value * 1000).toISOString();
@@ -815,6 +899,8 @@ async function upsertTikTokVideosAndSnapshots(params: {
   profile_id: string;
   videos: TikTokVideo[];
 }) {
+  const syncedAt = new Date().toISOString();
+
   for (const video of params.videos) {
     const videoRows = await supabaseAdminUpsertRows(
       "tiktok_videos?on_conflict=profile_id,tiktok_video_id",
@@ -839,8 +925,8 @@ async function upsertTikTokVideosAndSnapshots(params: {
           share_count: video.share_count ?? null,
           view_count: video.view_count ?? null,
           raw_video: video,
-          last_synced_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
+          last_synced_at: syncedAt,
+          updated_at: syncedAt,
         },
       ]
     );
@@ -856,7 +942,7 @@ async function upsertTikTokVideosAndSnapshots(params: {
         profile_id: params.profile_id,
         owner_id: params.owner_id,
         provider: "tiktok",
-        snapshot_at: new Date().toISOString(),
+        snapshot_at: syncedAt,
         like_count: video.like_count ?? null,
         comment_count: video.comment_count ?? null,
         share_count: video.share_count ?? null,
@@ -865,6 +951,11 @@ async function upsertTikTokVideosAndSnapshots(params: {
       },
     ]);
   }
+
+  await markMissingTikTokVideosInactive({
+    profile_id: params.profile_id,
+    currentTikTokVideoIds: params.videos.map((v) => String(v.id)),
+  });
 }
 
 async function getTikTokTokenByProfileId(profile_id: string): Promise<TikTokTokenRow | null> {
@@ -1112,6 +1203,96 @@ app.post("/api/tiktok/sync", requireAuth, async (req, res) => {
     console.error("[tiktok][sync] error:", e);
     return res.status(500).json({
       error: e?.message || "TikTok sync error",
+    });
+  }
+});
+
+/**
+ * GET /api/tiktok/status?owner_id=...
+ * Retourne le profil TikTok connecté pour un owner
+ */
+app.get("/api/tiktok/status", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.query.owner_id || "");
+    if (!owner_id) {
+      return res.status(400).json({ error: "Missing owner_id" });
+    }
+
+    const profile = await getTikTokProfileByOwnerId(owner_id);
+
+    return res.json({
+      connected: Boolean(profile?.id),
+      profile: profile ?? null,
+    });
+  } catch (e: any) {
+    console.error("[tiktok][status] error:", e);
+    return res.status(500).json({
+      error: e?.message || "TikTok status error",
+    });
+  }
+});
+
+/**
+ * POST /api/tiktok/sync-by-owner
+ * body: { owner_id: "..." }
+ */
+app.post("/api/tiktok/sync-by-owner", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "");
+    if (!owner_id) {
+      return res.status(400).json({ error: "Missing owner_id" });
+    }
+
+    const profile = await getTikTokProfileByOwnerId(owner_id);
+    if (!profile?.id) {
+      return res.status(404).json({ error: "No TikTok profile found for this owner_id" });
+    }
+
+    const result = await syncTikTokDataForProfile(profile.id);
+    return res.json(result);
+  } catch (e: any) {
+    console.error("[tiktok][sync-by-owner] error:", e);
+    return res.status(500).json({
+      error: e?.message || "TikTok sync-by-owner error",
+    });
+  }
+});
+
+/**
+ * POST /api/tiktok/sync-all
+ * Lance un sync global pour tous les profils TikTok
+ */
+app.post("/api/tiktok/sync-all", requireAuth, async (_req, res) => {
+  try {
+    const profiles = await getAllTikTokProfiles();
+    const results: any[] = [];
+
+    for (const profile of profiles) {
+      try {
+        const result = await syncTikTokDataForProfile(profile.id);
+        results.push({
+          profile_id: profile.id,
+          ok: true,
+          result,
+        });
+      } catch (e: any) {
+        results.push({
+          profile_id: profile.id,
+          ok: false,
+          error: e?.message || "Unknown error",
+        });
+      }
+    }
+
+    return res.json({
+      ok: true,
+      total: profiles.length,
+      results,
+    });
+  } catch (e: any) {
+    console.error("[tiktok][sync-all] error:", e);
+    return res.status(500).json({
+      error: e?.message || "TikTok sync-all error",
     });
   }
 });
