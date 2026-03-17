@@ -1057,8 +1057,9 @@ app.get("/auth/tiktok/start", async (req, res) => {
     authUrl.searchParams.set("state", state);
     authUrl.searchParams.set("code_challenge", code_challenge);
     authUrl.searchParams.set("code_challenge_method", "S256");
-
+    authUrl.searchParams.set("disable_auto_auth", "1");
     return res.redirect(authUrl.toString());
+    
   } catch (e: any) {
     console.error("[tiktok][start] error:", e);
     return res.status(500).send("TikTok OAuth start error");
