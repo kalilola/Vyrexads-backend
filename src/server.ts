@@ -459,10 +459,7 @@ type TikTokVideoListResponse = {
   };
 };
 
-function adminHeaders(
-  extra?: Record<string, string>,
-  schema: "public" | "private" = "public"
-) {
+function adminHeaders(extra?: Record<string, string>) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in backend env");
   }
@@ -471,8 +468,6 @@ function adminHeaders(
     apikey: SUPABASE_SERVICE_ROLE_KEY,
     Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
     "Content-Type": "application/json",
-    "Accept-Profile": schema,
-    "Content-Profile": schema,
     ...extra,
   };
 }
@@ -493,20 +488,13 @@ async function supabaseAdminInsert(path: string, rows: any[]) {
   }
 }
 
-async function supabaseAdminUpsertRows(
-  path: string,
-  rows: any[],
-  schema: "public" | "private" = "public"
-) {
+async function supabaseAdminUpsertRows(path: string, rows: any[]) {
   const url = `${SUPABASE_URL}/rest/v1/${path}`;
   const res = await fetch(url, {
     method: "POST",
-    headers: adminHeaders(
-      {
-        Prefer: "resolution=merge-duplicates,return=representation",
-      },
-      schema
-    ),
+    headers: adminHeaders({
+      Prefer: "resolution=merge-duplicates,return=representation",
+    }),
     body: JSON.stringify(rows),
   });
 
@@ -522,20 +510,13 @@ async function supabaseAdminUpsertRows(
   }
 }
 
-async function supabaseAdminPatch(
-  path: string,
-  patch: any,
-  schema: "public" | "private" = "public"
-) {
+async function supabaseAdminPatch(path: string, patch: any) {
   const url = `${SUPABASE_URL}/rest/v1/${path}`;
   const res = await fetch(url, {
     method: "PATCH",
-    headers: adminHeaders(
-      {
-        Prefer: "return=representation",
-      },
-      schema
-    ),
+    headers: adminHeaders({
+      Prefer: "return=representation",
+    }),
     body: JSON.stringify(patch),
   });
 
@@ -551,14 +532,11 @@ async function supabaseAdminPatch(
   }
 }
 
-async function supabaseAdminSelectSingleRow<T>(
-  path: string,
-  schema: "public" | "private" = "public"
-): Promise<T | null> {
+async function supabaseAdminSelectSingleRow<T>(path: string): Promise<T | null> {
   const url = `${SUPABASE_URL}/rest/v1/${path}`;
   const res = await fetch(url, {
     method: "GET",
-    headers: adminHeaders(undefined, schema),
+    headers: adminHeaders(),
   });
 
   const text = await res.text();
@@ -611,6 +589,30 @@ async function supabaseAdminDelete(path: string) {
     throw new Error(`Supabase admin delete failed: ${res.status} ${text}`);
   }
 }
+
+
+
+async function supabaseAdminRpc<T = any>(fnName: string, payload: Record<string, any>) {
+  const url = `${SUPABASE_URL}/rest/v1/rpc/${fnName}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: adminHeaders(),
+    body: JSON.stringify(payload),
+  });
+
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Supabase admin rpc ${fnName} failed: ${res.status} ${text}`);
+  }
+
+  try {
+    return text ? JSON.parse(text) : null as T;
+  } catch {
+    return null as T;
+  }
+}
+
+
 
 async function getTikTokProfileByOwnerId(owner_id: string) {
   return await supabaseAdminSelectSingleRow<{
@@ -717,18 +719,14 @@ async function refreshTikTokTokenIfNeeded(tokenRow: TikTokTokenRow): Promise<Tik
     ? new Date(Date.now() + Number(tokenJson.refresh_expires_in) * 1000).toISOString()
     : tokenRow.refresh_token_expires_at;
 
-  await supabaseAdminPatch(
-    `tiktok_connection_tokens?id=eq.${encodeURIComponent(tokenRow.id)}`,
-    {
-      access_token: nextAccessToken,
-      refresh_token: nextRefreshToken,
-      access_token_expires_at,
-      refresh_token_expires_at,
-      raw_token: tokenJson ?? {},
-      updated_at: new Date().toISOString(),
-    },
-    "private"
-  );
+  await supabaseAdminRpc("update_tiktok_connection_token", {
+    p_id: tokenRow.id,
+    p_access_token: nextAccessToken,
+    p_refresh_token: nextRefreshToken,
+    p_access_token_expires_at: access_token_expires_at,
+    p_refresh_token_expires_at: refresh_token_expires_at,
+    p_raw_token: tokenJson ?? {},
+  });
 
   return {
     ...tokenRow,
@@ -883,23 +881,16 @@ async function upsertTikTokProfileAndTokens(params: {
     throw new Error("Impossible de récupérer l'id du profil TikTok après upsert.");
   }
 
-  await supabaseAdminUpsertRows(
-    "tiktok_connection_tokens?on_conflict=profile_id",
-    [
-      {
-        profile_id: profile.id,
-        owner_id: params.owner_id,
-        provider: "tiktok",
-        access_token: params.access_token,
-        refresh_token: params.refresh_token,
-        access_token_expires_at: params.access_token_expires_at,
-        refresh_token_expires_at: params.refresh_token_expires_at,
-        raw_token: params.raw_token ?? {},
-        updated_at: new Date().toISOString(),
-      },
-    ],
-    "private"
-  );
+  await supabaseAdminRpc("upsert_tiktok_connection_token", {
+    p_profile_id: profile.id,
+    p_owner_id: params.owner_id,
+    p_provider: "tiktok",
+    p_access_token: params.access_token,
+    p_refresh_token: params.refresh_token,
+    p_access_token_expires_at: params.access_token_expires_at,
+    p_refresh_token_expires_at: params.refresh_token_expires_at,
+    p_raw_token: params.raw_token ?? {},
+  });
 
   await supabaseAdminInsert("tiktok_profile_snapshots", [
     {
@@ -983,10 +974,13 @@ async function upsertTikTokVideosAndSnapshots(params: {
 }
 
 async function getTikTokTokenByProfileId(profile_id: string): Promise<TikTokTokenRow | null> {
-  return await supabaseAdminSelectSingleRow<TikTokTokenRow>(
-    `tiktok_connection_tokens?select=id,profile_id,owner_id,provider,access_token,refresh_token,access_token_expires_at,refresh_token_expires_at,raw_token&profile_id=eq.${encodeURIComponent(profile_id)}`,
-    "private"
+  const data = await supabaseAdminRpc<TikTokTokenRow[] | TikTokTokenRow | null>(
+    "get_tiktok_token_by_profile_id",
+    { p_profile_id: profile_id }
   );
+
+  if (Array.isArray(data)) return data[0] || null;
+  return data || null;
 }
 
 async function syncTikTokDataForProfile(profile_id: string) {
