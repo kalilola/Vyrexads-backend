@@ -882,14 +882,14 @@ async function upsertTikTokProfileAndTokens(params: {
   }
 
   await supabaseAdminRpc("upsert_tiktok_connection_token", {
-    p_profile_id: profile.id,
-    p_owner_id: params.owner_id,
-    p_provider: "tiktok",
-    p_access_token: params.access_token,
-    p_refresh_token: params.refresh_token,
-    p_access_token_expires_at: params.access_token_expires_at,
-    p_refresh_token_expires_at: params.refresh_token_expires_at,
-    p_raw_token: params.raw_token ?? {},
+    p_in_profile_id: profile.id,
+    p_in_owner_id: params.owner_id,
+    p_in_provider: "tiktok",
+    p_in_access_token: params.access_token,
+    p_in_refresh_token: params.refresh_token,
+    p_in_access_token_expires_at: params.access_token_expires_at,
+    p_in_refresh_token_expires_at: params.refresh_token_expires_at,
+    p_in_raw_token: params.raw_token ?? {},
   });
 
   await supabaseAdminInsert("tiktok_profile_snapshots", [
