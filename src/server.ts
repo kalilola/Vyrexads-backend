@@ -459,7 +459,10 @@ type TikTokVideoListResponse = {
   };
 };
 
-function adminHeaders(extra?: Record<string, string>) {
+function adminHeaders(
+  extra?: Record<string, string>,
+  schema: "public" | "private" = "public"
+) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in backend env");
   }
@@ -468,6 +471,8 @@ function adminHeaders(extra?: Record<string, string>) {
     apikey: SUPABASE_SERVICE_ROLE_KEY,
     Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
     "Content-Type": "application/json",
+    "Accept-Profile": schema,
+    "Content-Profile": schema,
     ...extra,
   };
 }
@@ -488,13 +493,20 @@ async function supabaseAdminInsert(path: string, rows: any[]) {
   }
 }
 
-async function supabaseAdminUpsertRows(path: string, rows: any[]) {
+async function supabaseAdminUpsertRows(
+  path: string,
+  rows: any[],
+  schema: "public" | "private" = "public"
+) {
   const url = `${SUPABASE_URL}/rest/v1/${path}`;
   const res = await fetch(url, {
     method: "POST",
-    headers: adminHeaders({
-      Prefer: "resolution=merge-duplicates,return=representation",
-    }),
+    headers: adminHeaders(
+      {
+        Prefer: "resolution=merge-duplicates,return=representation",
+      },
+      schema
+    ),
     body: JSON.stringify(rows),
   });
 
@@ -510,13 +522,20 @@ async function supabaseAdminUpsertRows(path: string, rows: any[]) {
   }
 }
 
-async function supabaseAdminPatch(path: string, patch: any) {
+async function supabaseAdminPatch(
+  path: string,
+  patch: any,
+  schema: "public" | "private" = "public"
+) {
   const url = `${SUPABASE_URL}/rest/v1/${path}`;
   const res = await fetch(url, {
     method: "PATCH",
-    headers: adminHeaders({
-      Prefer: "return=representation",
-    }),
+    headers: adminHeaders(
+      {
+        Prefer: "return=representation",
+      },
+      schema
+    ),
     body: JSON.stringify(patch),
   });
 
@@ -532,11 +551,14 @@ async function supabaseAdminPatch(path: string, patch: any) {
   }
 }
 
-async function supabaseAdminSelectSingleRow<T>(path: string): Promise<T | null> {
+async function supabaseAdminSelectSingleRow<T>(
+  path: string,
+  schema: "public" | "private" = "public"
+): Promise<T | null> {
   const url = `${SUPABASE_URL}/rest/v1/${path}`;
   const res = await fetch(url, {
     method: "GET",
-    headers: adminHeaders(),
+    headers: adminHeaders(undefined, schema),
   });
 
   const text = await res.text();
@@ -696,7 +718,7 @@ async function refreshTikTokTokenIfNeeded(tokenRow: TikTokTokenRow): Promise<Tik
     : tokenRow.refresh_token_expires_at;
 
   await supabaseAdminPatch(
-    `private.tiktok_connection_tokens?id=eq.${encodeURIComponent(tokenRow.id)}`,
+    `tiktok_connection_tokens?id=eq.${encodeURIComponent(tokenRow.id)}`,
     {
       access_token: nextAccessToken,
       refresh_token: nextRefreshToken,
@@ -704,7 +726,8 @@ async function refreshTikTokTokenIfNeeded(tokenRow: TikTokTokenRow): Promise<Tik
       refresh_token_expires_at,
       raw_token: tokenJson ?? {},
       updated_at: new Date().toISOString(),
-    }
+    },
+    "private"
   );
 
   return {
@@ -861,7 +884,7 @@ async function upsertTikTokProfileAndTokens(params: {
   }
 
   await supabaseAdminUpsertRows(
-    "private.tiktok_connection_tokens?on_conflict=profile_id",
+    "tiktok_connection_tokens?on_conflict=profile_id",
     [
       {
         profile_id: profile.id,
@@ -874,7 +897,8 @@ async function upsertTikTokProfileAndTokens(params: {
         raw_token: params.raw_token ?? {},
         updated_at: new Date().toISOString(),
       },
-    ]
+    ],
+    "private"
   );
 
   await supabaseAdminInsert("tiktok_profile_snapshots", [
@@ -960,7 +984,8 @@ async function upsertTikTokVideosAndSnapshots(params: {
 
 async function getTikTokTokenByProfileId(profile_id: string): Promise<TikTokTokenRow | null> {
   return await supabaseAdminSelectSingleRow<TikTokTokenRow>(
-    `private.tiktok_connection_tokens?select=id,profile_id,owner_id,provider,access_token,refresh_token,access_token_expires_at,refresh_token_expires_at,raw_token&profile_id=eq.${encodeURIComponent(profile_id)}`
+    `tiktok_connection_tokens?select=id,profile_id,owner_id,provider,access_token,refresh_token,access_token_expires_at,refresh_token_expires_at,raw_token&profile_id=eq.${encodeURIComponent(profile_id)}`,
+    "private"
   );
 }
 
