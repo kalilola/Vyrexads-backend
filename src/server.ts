@@ -774,7 +774,7 @@ async function fetchTikTokUserInfo(accessToken: string): Promise<TikTokUserInfoR
     userJson = null;
   }
 
-  if (!userRes.ok || userJson?.error) {
+  if (!userRes.ok || (userJson?.error && userJson.error.code !== "ok")) {
     throw new Error(`TikTok user/info failed: ${userRes.status} ${userText}`);
   }
 
@@ -815,7 +815,7 @@ async function fetchTikTokVideos(accessToken: string): Promise<TikTokVideo[]> {
       videosJson = null;
     }
 
-    if (!videosRes.ok || videosJson?.error) {
+    if (!videosRes.ok || (videosJson?.error && videosJson.error.code !== "ok")) {
       throw new Error(`TikTok video/list failed: ${videosRes.status} ${videosText}`);
     }
 
@@ -1128,7 +1128,7 @@ app.get("/auth/tiktok/callback", async (req, res) => {
       tokenJson = null;
     }
 
-    if (!tokenRes.ok || tokenJson?.error) {
+    if (!tokenRes.ok || (tokenJson?.error && tokenJson.error.code !== "ok")) {
       console.error("[tiktok][callback] token exchange failed:", tokenRes.status, tokenText);
       const u = new URL(return_to);
       u.searchParams.set("tiktok", "error");
