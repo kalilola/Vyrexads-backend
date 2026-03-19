@@ -328,6 +328,26 @@ const TIKTOK_OAUTH_REDIRECT_URI =
   "";
   
 
+// ==============================
+// Facebook OAuth
+// ==============================
+const FACEBOOK_APP_ID = process.env.FACEBOOK_APP_ID || "";
+const FACEBOOK_APP_SECRET = process.env.FACEBOOK_APP_SECRET || "";
+const FACEBOOK_OAUTH_REDIRECT_URI =
+  process.env.FACEBOOK_OAUTH_REDIRECT_URI ||
+  "https://vyrexads-backend.onrender.com/auth/facebook/callback";
+
+const FACEBOOK_OAUTH_SCOPES =
+  process.env.FACEBOOK_OAUTH_SCOPES ||
+  "pages_show_list,pages_read_engagement,read_insights,ads_read,business_management";
+
+const FRONTEND_RETURN_URL =
+  process.env.FRONTEND_RETURN_URL || "http://localhost:8080/analytics";
+
+
+
+
+
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
@@ -1653,9 +1673,186 @@ app.post("/api/google-ads/sync-daily", async (req, res) => {
   }
 });
 
+// ==============================
+// Facebook OAuth2
+// ==============================
+
+/**
+ * START:
+ * GET /auth/facebook/start?owner_id=xxx&return_to=https://ton-front.com/analytics
+ */
+app.get("/auth/facebook/start", async (req, res) => {
+  try {
+    const owner_id = String(req.query.owner_id || "");
+    const return_to = String(req.query.return_to || FRONTEND_RETURN_URL);
+
+    if (!owner_id) {
+      return res.status(400).send("Missing owner_id");
+    }
+
+    if (!FACEBOOK_APP_ID || !FACEBOOK_APP_SECRET || !FACEBOOK_OAUTH_REDIRECT_URI) {
+      return res.status(500).send("Missing Facebook OAuth env vars");
+    }
+
+    const state = signState({
+      owner_id,
+      return_to,
+      provider: "facebook",
+      t: Date.now(),
+    });
+
+    const authUrl = new URL("https://www.facebook.com/v23.0/dialog/oauth");
+    authUrl.searchParams.set("client_id", FACEBOOK_APP_ID);
+    authUrl.searchParams.set("redirect_uri", FACEBOOK_OAUTH_REDIRECT_URI);
+    authUrl.searchParams.set("state", state);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("scope", FACEBOOK_OAUTH_SCOPES);
+
+    return res.redirect(authUrl.toString());
+  } catch (e: any) {
+    console.error("[facebook][start] error:", e);
+    return res.status(500).send("Facebook OAuth start error");
+  }
+});
+
+/**
+ * CALLBACK:
+ * Facebook redirects here with ?code=...&state=...
+ */
+app.get("/auth/facebook/callback", async (req, res) => {
+  try {
+    const code = String(req.query.code || "");
+    const state = String(req.query.state || "");
+    const error = String(req.query.error || "");
+
+    if (error) {
+      const parsed = state ? verifyState(state) : null;
+      const return_to = String(parsed?.return_to || FRONTEND_RETURN_URL);
+      const u = new URL(return_to);
+      u.searchParams.set("facebook", "error");
+      u.searchParams.set("reason", error);
+      return res.redirect(u.toString());
+    }
+
+    if (!code) {
+      return res.status(400).send("Missing code");
+    }
+
+    const parsed = verifyState(state);
+    if (!parsed) {
+      return res.status(400).send("Invalid state");
+    }
+
+    const owner_id = String(parsed.owner_id || "");
+    const return_to = String(parsed.return_to || FRONTEND_RETURN_URL);
+
+    if (!owner_id) {
+      return res.status(400).send("Missing owner_id");
+    }
+
+    const tokenUrl = new URL("https://graph.facebook.com/v23.0/oauth/access_token");
+    tokenUrl.searchParams.set("client_id", FACEBOOK_APP_ID);
+    tokenUrl.searchParams.set("client_secret", FACEBOOK_APP_SECRET);
+    tokenUrl.searchParams.set("redirect_uri", FACEBOOK_OAUTH_REDIRECT_URI);
+    tokenUrl.searchParams.set("code", code);
+
+    const tokenRes = await fetch(tokenUrl.toString(), {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    });
+
+    const tokenText = await tokenRes.text();
+
+    let tokenJson: any = null;
+    try {
+      tokenJson = tokenText ? JSON.parse(tokenText) : null;
+    } catch {
+      tokenJson = null;
+    }
+
+    if (!tokenRes.ok || tokenJson?.error) {
+      console.error("[facebook][callback] token exchange failed:", tokenRes.status, tokenText);
+      const u = new URL(return_to);
+      u.searchParams.set("facebook", "error");
+      return res.redirect(u.toString());
+    }
+
+    const access_token = String(tokenJson?.access_token || "");
+    const token_type = String(tokenJson?.token_type || "");
+    const expires_in = Number(tokenJson?.expires_in || 0);
+
+    if (!access_token) {
+      const u = new URL(return_to);
+      u.searchParams.set("facebook", "error");
+      return res.redirect(u.toString());
+    }
+
+    const meUrl = new URL("https://graph.facebook.com/v23.0/me");
+    meUrl.searchParams.set("fields", "id,name");
+    meUrl.searchParams.set("access_token", access_token);
+
+    const meRes = await fetch(meUrl.toString(), {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    });
+
+    const meText = await meRes.text();
+
+    let meJson: any = null;
+    try {
+      meJson = meText ? JSON.parse(meText) : null;
+    } catch {
+      meJson = null;
+    }
+
+    if (!meRes.ok || meJson?.error) {
+      console.error("[facebook][callback] /me failed:", meRes.status, meText);
+    }
+
+    const expires_at =
+      expires_in > 0
+        ? new Date(Date.now() + expires_in * 1000).toISOString()
+        : null;
+
+    // stockage simple dans provider_tokens
+    await supabaseUpsertProviderTokenVault({
+      owner_id,
+      provider: "facebook",
+      token: {
+        provider: "facebook",
+        access_token,
+        token_type,
+        expires_in,
+        expires_at,
+        scopes: FACEBOOK_OAUTH_SCOPES.split(",").map((s) => s.trim()).filter(Boolean),
+        user: meJson ?? null,
+        raw_token: tokenJson ?? {},
+      },
+    });
+
+    const u = new URL(return_to);
+    u.searchParams.set("facebook", "connected");
+    if (meJson?.id) u.searchParams.set("facebook_user_id", String(meJson.id));
+    return res.redirect(u.toString());
+  } catch (e: any) {
+    console.error("[facebook][callback] error:", e);
+    const u = new URL(FRONTEND_RETURN_URL);
+    u.searchParams.set("facebook", "error");
+    return res.redirect(u.toString());
+  }
+});
+
 
 app.get("/health", (_, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
   console.log(`Relay API listening on http://localhost:${PORT}`);
 });
+
+
+
+
