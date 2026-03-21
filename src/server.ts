@@ -1402,6 +1402,77 @@ async function getGoogleAdsToken(owner_id: string) {
   return row.token;
 }
 
+
+// ==============================
+// Facebook token helpers
+// ==============================
+async function getFacebookToken(owner_id: string) {
+  const row = await supabaseAdminSelectSingle<ProviderTokenRow>(
+    `provider_tokens?select=provider,owner_id,token&owner_id=eq.${owner_id}&provider=eq.facebook`
+  );
+
+  if (!row?.token) {
+    throw new Error("No facebook token found for this owner_id");
+  }
+
+  return row.token;
+}
+
+function getFacebookAccessTokenFromToken(token: any) {
+  const accessToken =
+    token?.access_token ||
+    token?.raw_token?.access_token ||
+    token?.long_lived?.access_token ||
+    token?.short_lived?.access_token ||
+    "";
+
+  if (!accessToken || typeof accessToken !== "string") {
+    throw new Error("Facebook access_token introuvable dans le token stocké");
+  }
+
+  return accessToken;
+}
+
+async function facebookGraphGetWithAccessToken(
+  path: string,
+  access_token: string,
+  query?: Record<string, string | number | boolean | null | undefined>
+) {
+  const url = new URL(`https://graph.facebook.com/v23.0/${path.replace(/^\/+/, "")}`);
+
+  if (query) {
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined || value === null) continue;
+      url.searchParams.set(key, String(value));
+    }
+  }
+
+  url.searchParams.set("access_token", access_token);
+
+  const res = await fetch(url.toString(), {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+    },
+  });
+
+  const text = await res.text();
+  let json: any = null;
+
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+
+  if (!res.ok || json?.error) {
+    throw new Error(`Facebook Graph error: ${res.status} ${text}`);
+  }
+
+  return json;
+}
+
+
 function isExpired(token: any) {
   const exp = token?.expires_at ? Date.parse(token.expires_at) : NaN;
   if (!Number.isFinite(exp)) return false; // if unknown, assume ok
@@ -1677,6 +1748,28 @@ app.post("/api/google-ads/sync-daily", async (req, res) => {
 // Facebook OAuth2
 // ==============================
 
+async function facebookGraphGet(url: URL) {
+  const r = await fetch(url.toString(), {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+
+  const text = await r.text();
+  let json: any = null;
+
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+
+  if (!r.ok || json?.error) {
+    throw new Error(`Facebook Graph error: ${r.status} ${text}`);
+  }
+
+  return json;
+}
+
 /**
  * START:
  * GET /auth/facebook/start?owner_id=xxx&return_to=https://ton-front.com/analytics
@@ -1718,6 +1811,12 @@ app.get("/auth/facebook/start", async (req, res) => {
 /**
  * CALLBACK:
  * Facebook redirects here with ?code=...&state=...
+ *
+ * On fait :
+ * 1) code -> short-lived user token
+ * 2) short-lived -> long-lived user token
+ * 3) /me pour stocker l'identité Meta de l'utilisateur
+ * 4) stockage sécurisé en DB
  */
 app.get("/auth/facebook/callback", async (req, res) => {
   try {
@@ -1750,87 +1849,87 @@ app.get("/auth/facebook/callback", async (req, res) => {
       return res.status(400).send("Missing owner_id");
     }
 
-    const tokenUrl = new URL("https://graph.facebook.com/v23.0/oauth/access_token");
-    tokenUrl.searchParams.set("client_id", FACEBOOK_APP_ID);
-    tokenUrl.searchParams.set("client_secret", FACEBOOK_APP_SECRET);
-    tokenUrl.searchParams.set("redirect_uri", FACEBOOK_OAUTH_REDIRECT_URI);
-    tokenUrl.searchParams.set("code", code);
+    // 1) code -> short-lived token
+    const shortTokenUrl = new URL("https://graph.facebook.com/v23.0/oauth/access_token");
+    shortTokenUrl.searchParams.set("client_id", FACEBOOK_APP_ID);
+    shortTokenUrl.searchParams.set("client_secret", FACEBOOK_APP_SECRET);
+    shortTokenUrl.searchParams.set("redirect_uri", FACEBOOK_OAUTH_REDIRECT_URI);
+    shortTokenUrl.searchParams.set("code", code);
 
-    const tokenRes = await fetch(tokenUrl.toString(), {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-      },
-    });
+    const shortTokenJson = await facebookGraphGet(shortTokenUrl);
 
-    const tokenText = await tokenRes.text();
+    const short_access_token = String(shortTokenJson?.access_token || "");
+    const short_token_type = String(shortTokenJson?.token_type || "");
+    const short_expires_in = Number(shortTokenJson?.expires_in || 0);
 
-    let tokenJson: any = null;
-    try {
-      tokenJson = tokenText ? JSON.parse(tokenText) : null;
-    } catch {
-      tokenJson = null;
-    }
-
-    if (!tokenRes.ok || tokenJson?.error) {
-      console.error("[facebook][callback] token exchange failed:", tokenRes.status, tokenText);
+    if (!short_access_token) {
       const u = new URL(return_to);
       u.searchParams.set("facebook", "error");
+      u.searchParams.set("reason", "missing_short_token");
       return res.redirect(u.toString());
     }
 
-    const access_token = String(tokenJson?.access_token || "");
-    const token_type = String(tokenJson?.token_type || "");
-    const expires_in = Number(tokenJson?.expires_in || 0);
+    // 2) short-lived -> long-lived token
+    const longTokenUrl = new URL("https://graph.facebook.com/v23.0/oauth/access_token");
+    longTokenUrl.searchParams.set("grant_type", "fb_exchange_token");
+    longTokenUrl.searchParams.set("client_id", FACEBOOK_APP_ID);
+    longTokenUrl.searchParams.set("client_secret", FACEBOOK_APP_SECRET);
+    longTokenUrl.searchParams.set("fb_exchange_token", short_access_token);
 
-    if (!access_token) {
-      const u = new URL(return_to);
-      u.searchParams.set("facebook", "error");
-      return res.redirect(u.toString());
-    }
+    let active_access_token = short_access_token;
+    let active_token_type = short_token_type;
+    let active_expires_in = short_expires_in;
+    let raw_long_token: any = null;
 
-    const meUrl = new URL("https://graph.facebook.com/v23.0/me");
-    meUrl.searchParams.set("fields", "id,name");
-    meUrl.searchParams.set("access_token", access_token);
-
-    const meRes = await fetch(meUrl.toString(), {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-      },
-    });
-
-    const meText = await meRes.text();
-
-    let meJson: any = null;
     try {
-      meJson = meText ? JSON.parse(meText) : null;
-    } catch {
-      meJson = null;
-    }
+      const longTokenJson = await facebookGraphGet(longTokenUrl);
 
-    if (!meRes.ok || meJson?.error) {
-      console.error("[facebook][callback] /me failed:", meRes.status, meText);
+      if (longTokenJson?.access_token) {
+        active_access_token = String(longTokenJson.access_token);
+        active_token_type = String(longTokenJson.token_type || short_token_type || "");
+        active_expires_in = Number(longTokenJson.expires_in || 0);
+        raw_long_token = longTokenJson;
+      }
+    } catch (e) {
+      console.warn("[facebook][callback] long-lived exchange failed, fallback short-lived token:", e);
     }
 
     const expires_at =
-      expires_in > 0
-        ? new Date(Date.now() + expires_in * 1000).toISOString()
+      active_expires_in > 0
+        ? new Date(Date.now() + active_expires_in * 1000).toISOString()
         : null;
 
-    // stockage simple dans provider_tokens
+    // 3) user info
+    let meJson: any = null;
+    try {
+      const meUrl = new URL("https://graph.facebook.com/v23.0/me");
+      meUrl.searchParams.set("fields", "id,name");
+      meUrl.searchParams.set("access_token", active_access_token);
+      meJson = await facebookGraphGet(meUrl);
+    } catch (e) {
+      console.warn("[facebook][callback] /me failed:", e);
+    }
+
+    // 4) stockage sécurisé
     await supabaseUpsertProviderTokenVault({
       owner_id,
       provider: "facebook",
       token: {
         provider: "facebook",
-        access_token,
-        token_type,
-        expires_in,
+        access_token: active_access_token,
+        token_type: active_token_type,
+        expires_in: active_expires_in,
         expires_at,
         scopes: FACEBOOK_OAUTH_SCOPES.split(",").map((s) => s.trim()).filter(Boolean),
         user: meJson ?? null,
-        raw_token: tokenJson ?? {},
+        short_lived: {
+          access_token: short_access_token,
+          token_type: short_token_type,
+          expires_in: short_expires_in,
+          raw: shortTokenJson ?? {},
+        },
+        long_lived: raw_long_token ?? null,
+        stored_at: new Date().toISOString(),
       },
     });
 
@@ -1842,7 +1941,49 @@ app.get("/auth/facebook/callback", async (req, res) => {
     console.error("[facebook][callback] error:", e);
     const u = new URL(FRONTEND_RETURN_URL);
     u.searchParams.set("facebook", "error");
+    u.searchParams.set("reason", e?.message || "unknown");
     return res.redirect(u.toString());
+  }
+});
+
+
+/**
+ * POST /api/facebook/debug/me
+ * body: { owner_id: "..." }
+ *
+ * Test minimal :
+ * 1) lit le token Facebook stocké en base
+ * 2) extrait access_token
+ * 3) appelle /me
+ */
+app.post("/api/facebook/debug/me", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "");
+
+    if (!owner_id) {
+      return res.status(400).json({ error: "Missing owner_id" });
+    }
+
+    const token = await getFacebookToken(owner_id);
+    const access_token = getFacebookAccessTokenFromToken(token);
+
+    const me = await facebookGraphGetWithAccessToken("me", access_token, {
+      fields: "id,name",
+    });
+
+    return res.json({
+      ok: true,
+      provider: "facebook",
+      owner_id,
+      facebook_user: me,
+      expires_at: token?.expires_at ?? null,
+      scopes: Array.isArray(token?.scopes) ? token.scopes : [],
+    });
+  } catch (e: any) {
+    console.error("[facebook][debug/me] error:", e);
+    return res.status(500).json({
+      error: e?.message || "Facebook debug me error",
+    });
   }
 });
 
