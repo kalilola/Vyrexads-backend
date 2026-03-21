@@ -1425,11 +1425,21 @@ async function getFacebookToken(owner_id: string) {
 
 
 function getFacebookAccessTokenFromToken(token: any) {
+  let parsed = token;
+
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      throw new Error("Facebook token stocké invalide: JSON non parsable");
+    }
+  }
+
   const accessToken =
-    token?.access_token ||
-    token?.raw_token?.access_token ||
-    token?.long_lived?.access_token ||
-    token?.short_lived?.access_token ||
+    parsed?.access_token ||
+    parsed?.raw_token?.access_token ||
+    parsed?.long_lived?.access_token ||
+    parsed?.short_lived?.access_token ||
     "";
 
   if (!accessToken || typeof accessToken !== "string") {
