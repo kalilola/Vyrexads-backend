@@ -1534,6 +1534,29 @@ async function facebookGraphGetWithAccessToken(
 }
 
 
+function getFacebookPageAccessTokenFromStoredToken(token: any) {
+  let parsed = token;
+
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      throw new Error("Facebook page token stocké invalide: JSON non parsable");
+    }
+  }
+
+  const accessToken = parsed?.access_token || "";
+
+  if (!accessToken || typeof accessToken !== "string") {
+    throw new Error("Facebook page access_token introuvable dans le token stocké");
+  }
+
+  return accessToken;
+}
+
+
+
+
 function isExpired(token: any) {
   const exp = token?.expires_at ? Date.parse(token.expires_at) : NaN;
   if (!Number.isFinite(exp)) return false; // if unknown, assume ok
@@ -2180,6 +2203,84 @@ app.post("/api/facebook/sync-pages", requireAuth, async (req, res) => {
     });
   }
 });
+
+
+
+
+
+
+/**
+ * POST /api/facebook/sync-page-posts
+ * body: { owner_id: "...", page_id: "...", limit?: 100 }
+ *
+ * 1) lit le page access token stocké
+ * 2) appelle /{page_id}/posts
+ * 3) upsert dans meta_page_posts
+ */
+app.post("/api/facebook/sync-page-posts", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "");
+    const page_id = String(req.body?.page_id || "");
+    const limit = Number(req.body?.limit || 100);
+
+    if (!owner_id) {
+      return res.status(400).json({ error: "Missing owner_id" });
+    }
+
+    if (!page_id) {
+      return res.status(400).json({ error: "Missing page_id" });
+    }
+
+    const pageToken = await getFacebookPageToken(owner_id, page_id);
+    const page_access_token = getFacebookPageAccessTokenFromStoredToken(pageToken);
+
+    const postsJson = await facebookGraphGetWithAccessToken(`${page_id}/posts`, page_access_token, {
+      fields: "id,message,created_time,permalink_url,permalink",
+      limit,
+    });
+
+    const postsRaw = Array.isArray(postsJson?.data) ? postsJson.data : [];
+
+    const rows = postsRaw
+      .filter((p: any) => p?.id)
+      .map((p: any) => ({
+        owner_id,
+        provider: "facebook",
+        page_id,
+        post_id: String(p.id),
+        message: p?.message ?? null,
+        created_time: p?.created_time ?? null,
+        permalink: p?.permalink ?? null,
+        permalink_url: p?.permalink_url ?? null,
+        raw: p,
+      }));
+
+    if (rows.length > 0) {
+      await supabaseAdminUpsert(
+        "meta_page_posts?on_conflict=owner_id,provider,post_id",
+        rows
+      );
+    }
+
+    return res.json({
+      ok: true,
+      owner_id,
+      page_id,
+      fetched_posts: postsRaw.length,
+      stored_posts: rows.length,
+      post_ids: rows.map((p: { post_id: string }) => p.post_id),
+    });
+  } catch (e: any) {
+    console.error("[facebook][sync-page-posts] error:", e);
+    return res.status(500).json({
+      error: e?.message || "Facebook sync page posts error",
+    });
+  }
+});
+
+
+
+
 
 
 
