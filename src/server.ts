@@ -2281,6 +2281,94 @@ app.post("/api/facebook/sync-page-posts", requireAuth, async (req, res) => {
 
 
 
+/**
+ * POST /api/facebook/sync-page-post-metrics
+ * body: { owner_id: "...", page_id: "...", post_id: "..." }
+ */
+app.post("/api/facebook/sync-page-post-metrics", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "");
+    const page_id = String(req.body?.page_id || "");
+    const post_id = String(req.body?.post_id || "");
+
+    if (!owner_id) {
+      return res.status(400).json({ error: "Missing owner_id" });
+    }
+    if (!page_id) {
+      return res.status(400).json({ error: "Missing page_id" });
+    }
+    if (!post_id) {
+      return res.status(400).json({ error: "Missing post_id" });
+    }
+
+    const pageToken = await getFacebookPageToken(owner_id, page_id);
+    const page_access_token = getFacebookPageAccessTokenFromStoredToken(pageToken);
+
+    const [insightsJson, socialJson] = await Promise.all([
+      facebookGraphGetWithAccessToken(`${post_id}/insights`, page_access_token, {
+        metric: "post_impressions_unique",
+      }),
+      facebookGraphGetWithAccessToken(post_id, page_access_token, {
+        fields:
+          "created_time,permalink_url,shares,comments.summary(true).limit(0),likes.summary(true).limit(0),reactions.summary(true).limit(0),message",
+      }),
+    ]);
+
+    const impressionsMetric = Array.isArray(insightsJson?.data)
+      ? insightsJson.data.find((x: any) => x?.name === "post_impressions_unique")
+      : null;
+
+    const impressions_unique = Number(impressionsMetric?.values?.[0]?.value ?? 0) || 0;
+    const shares = Number(socialJson?.shares?.count ?? 0) || 0;
+    const comments_count = Number(socialJson?.comments?.summary?.total_count ?? 0) || 0;
+    const likes_count = Number(socialJson?.likes?.summary?.total_count ?? 0) || 0;
+    const reactions_count = Number(socialJson?.reactions?.summary?.total_count ?? 0) || 0;
+
+    const row = {
+      owner_id,
+      provider: "facebook",
+      page_id,
+      post_id,
+      message: typeof socialJson?.message === "string" ? socialJson.message : null,
+      created_time: socialJson?.created_time ?? null,
+      permalink_url: socialJson?.permalink_url ?? null,
+      impressions_unique,
+      shares,
+      comments_count,
+      likes_count,
+      reactions_count,
+      metrics_fetched_at: new Date().toISOString(),
+      metrics_raw: {
+        impressions: insightsJson,
+        social: socialJson,
+      },
+      raw: socialJson,
+    };
+
+    await supabaseAdminUpsert(
+      "meta_page_posts?on_conflict=owner_id,provider,post_id",
+      [row]
+    );
+
+    return res.json({
+      ok: true,
+      owner_id,
+      page_id,
+      post_id,
+      impressions_unique,
+      shares,
+      comments_count,
+      likes_count,
+      reactions_count,
+    });
+  } catch (e: any) {
+    console.error("[facebook][sync-page-post-metrics] error:", e);
+    return res.status(500).json({
+      error: e?.message || "Facebook sync page post metrics error",
+    });
+  }
+});
+
 
 
 
