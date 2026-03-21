@@ -634,6 +634,50 @@ async function supabaseAdminRpc<T = any>(fnName: string, payload: Record<string,
 
 
 
+
+
+function getFacebookPageProviderKey(page_id: string) {
+  return `facebook_page:${page_id}`;
+}
+
+async function upsertFacebookPageAccessToken(params: {
+  owner_id: string;
+  page_id: string;
+  page_name?: string | null;
+  page_access_token: string;
+}) {
+  await supabaseUpsertProviderTokenVault({
+    owner_id: params.owner_id,
+    provider: getFacebookPageProviderKey(params.page_id),
+    token: {
+      provider: "facebook_page",
+      page_id: params.page_id,
+      page_name: params.page_name ?? null,
+      access_token: params.page_access_token,
+      stored_at: new Date().toISOString(),
+    },
+  });
+}
+
+async function getFacebookPageToken(owner_id: string, page_id: string) {
+  const data = await supabaseAdminRpc<any>("get_provider_token", {
+    p_owner_id: owner_id,
+    p_provider: getFacebookPageProviderKey(page_id),
+  });
+
+  const token = Array.isArray(data)
+    ? (data[0]?.decrypted_secret ?? data[0] ?? null)
+    : (data?.decrypted_secret ?? data ?? null);
+
+  if (!token) {
+    throw new Error(`No facebook page token found for page_id=${page_id}`);
+  }
+
+  return token;
+}
+
+
+
 async function getTikTokProfileByOwnerId(owner_id: string) {
   return await supabaseAdminSelectSingleRow<{
     id: string;
@@ -647,6 +691,7 @@ async function getTikTokProfileByOwnerId(owner_id: string) {
     )}&order=updated_at.desc&limit=1`
   );
 }
+
 
 async function getAllTikTokProfiles() {
   return await supabaseAdminSelectRows<{
@@ -2054,6 +2099,89 @@ app.post("/api/facebook/debug/pages", requireAuth, async (req, res) => {
     });
   }
 });
+
+
+/**
+ * POST /api/facebook/sync-pages
+ * body: { owner_id: "..." }
+ *
+ * 1) récupère les pages via /me/accounts
+ * 2) upsert les métadonnées dans meta_pages
+ * 3) stocke un page access token chiffré par page dans provider_tokens
+ */
+app.post("/api/facebook/sync-pages", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "");
+
+    if (!owner_id) {
+      return res.status(400).json({ error: "Missing owner_id" });
+    }
+
+    const token = await getFacebookToken(owner_id);
+    const access_token = getFacebookAccessTokenFromToken(token);
+
+    const pagesJson = await facebookGraphGetWithAccessToken("me/accounts", access_token, {
+      fields: "id,name,category,access_token,tasks",
+      limit: 100,
+    });
+
+    const pagesRaw = Array.isArray(pagesJson?.data) ? pagesJson.data : [];
+
+    const metaPageRows = pagesRaw
+      .filter((p: any) => p?.id)
+      .map((p: any) => ({
+        owner_id,
+        provider: "facebook",
+        page_id: String(p.id),
+        name: String(p?.name || ""),
+        category: p?.category ?? null,
+        tasks: Array.isArray(p?.tasks) ? p.tasks : [],
+        raw: p,
+      }));
+
+    if (metaPageRows.length > 0) {
+      await supabaseAdminUpsert(
+        "meta_pages?on_conflict=owner_id,provider,page_id",
+        metaPageRows
+      );
+    }
+
+    let stored_page_tokens = 0;
+
+    for (const p of pagesRaw) {
+      const page_id = String(p?.id || "");
+      const page_name = p?.name ?? null;
+      const page_access_token = String(p?.access_token || "");
+
+      if (!page_id || !page_access_token) continue;
+
+      await upsertFacebookPageAccessToken({
+        owner_id,
+        page_id,
+        page_name,
+        page_access_token,
+      });
+
+      stored_page_tokens += 1;
+    }
+
+    return res.json({
+      ok: true,
+      owner_id,
+      fetched_pages: pagesRaw.length,
+      stored_meta_pages: metaPageRows.length,
+      stored_page_tokens,
+      page_ids: metaPageRows.map((p: { page_id: string }) => p.page_id),
+    });
+  } catch (e: any) {
+    console.error("[facebook][sync-pages] error:", e);
+    return res.status(500).json({
+      error: e?.message || "Facebook sync pages error",
+    });
+  }
+});
+
+
 
 app.get("/health", (_, res) => res.json({ ok: true }));
 
