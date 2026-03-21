@@ -2004,6 +2004,57 @@ app.post("/api/facebook/debug/me", requireAuth, async (req, res) => {
 });
 
 
+/**
+ * POST /api/facebook/debug/pages
+ * body: { owner_id: "..." }
+ *
+ * Test minimal :
+ * 1) lit le token Facebook stocké en base
+ * 2) extrait access_token
+ * 3) appelle /me/accounts
+ */
+app.post("/api/facebook/debug/pages", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "");
+
+    if (!owner_id) {
+      return res.status(400).json({ error: "Missing owner_id" });
+    }
+
+    const token = await getFacebookToken(owner_id);
+    const access_token = getFacebookAccessTokenFromToken(token);
+
+    const pagesJson = await facebookGraphGetWithAccessToken("me/accounts", access_token, {
+      fields: "id,name,category,access_token,tasks",
+      limit: 100,
+    });
+
+    const pages = Array.isArray(pagesJson?.data)
+      ? pagesJson.data.map((p: any) => ({
+          page_id: String(p?.id || ""),
+          name: p?.name ?? null,
+          category: p?.category ?? null,
+          tasks: Array.isArray(p?.tasks) ? p.tasks : [],
+          has_page_access_token: Boolean(p?.access_token),
+          page_access_token: p?.access_token || null,
+        }))
+      : [];
+
+    return res.json({
+      ok: true,
+      provider: "facebook",
+      owner_id,
+      count: pages.length,
+      pages,
+    });
+  } catch (e: any) {
+    console.error("[facebook][debug/pages] error:", e);
+    return res.status(500).json({
+      error: e?.message || "Facebook debug pages error",
+    });
+  }
+});
+
 app.get("/health", (_, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
