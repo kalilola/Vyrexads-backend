@@ -1407,16 +1407,21 @@ async function getGoogleAdsToken(owner_id: string) {
 // Facebook token helpers
 // ==============================
 async function getFacebookToken(owner_id: string) {
-  const row = await supabaseAdminSelectSingle<ProviderTokenRow>(
-    `provider_tokens?select=provider,owner_id,token&owner_id=eq.${owner_id}&provider=eq.facebook`
-  );
+  const data = await supabaseAdminRpc<any>("get_provider_token", {
+    p_owner_id: owner_id,
+    p_provider: "facebook",
+  });
 
-  if (!row?.token) {
+  const token =
+    Array.isArray(data) ? (data[0]?.decrypted_secret ?? data[0] ?? null) : data?.decrypted_secret ?? data ?? null;
+
+  if (!token) {
     throw new Error("No facebook token found for this owner_id");
   }
 
-  return row.token;
+  return token;
 }
+
 
 function getFacebookAccessTokenFromToken(token: any) {
   const accessToken =
