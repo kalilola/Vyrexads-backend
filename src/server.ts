@@ -1412,8 +1412,9 @@ async function getFacebookToken(owner_id: string) {
     p_provider: "facebook",
   });
 
-  const token =
-    Array.isArray(data) ? (data[0]?.decrypted_secret ?? data[0] ?? null) : data?.decrypted_secret ?? data ?? null;
+  const token = Array.isArray(data)
+    ? (data[0]?.decrypted_secret ?? data[0] ?? null)
+    : (data?.decrypted_secret ?? data ?? null);
 
   if (!token) {
     throw new Error("No facebook token found for this owner_id");
