@@ -1416,39 +1416,36 @@ app.post("/api/tiktok/sync-all", requireAuth, async (_req, res) => {
 // ==============================
 const GOOGLE_ADS_DEVELOPER_TOKEN = process.env.GOOGLE_ADS_DEVELOPER_TOKEN || "";
 const GOOGLE_ADS_LOGIN_CUSTOMER_ID = process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID || ""; // optional MCC
-const GOOGLE_ADS_API_VERSION = "v23"; // latest as of 2026-01-28
+const GOOGLE_ADS_API_VERSION = "v23";
 
 type ProviderTokenRow = {
   provider: string;
   owner_id: string;
-  token: any; // jsonb
+  token: any;
 };
 
-async function supabaseAdminSelectSingle<T>(path: string) {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in backend env");
-  }
-  const url = `${SUPABASE_URL}/rest/v1/${path}`;
-  const res = await fetch(url, {
-    method: "GET",
-    headers: {
-      apikey: SUPABASE_SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-      "Content-Type": "application/json",
-    },
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Supabase admin select failed: ${res.status} ${text}`);
-  }
-  const data = await res.json();
-  return (Array.isArray(data) ? data[0] : data) as T | null;
-}
+type GoogleAdsStoredToken = {
+  access_token?: string;
+  refresh_token?: string;
+  expires_at?: string | null;
+  [key: string]: any;
+};
+
+type GoogleAdsCustomerRow = {
+  owner_id: string;
+  customer_id: string;
+  resource_name: string;
+  descriptive_name: string | null;
+  currency_code: string | null;
+  time_zone: string | null;
+  is_manager: boolean | null;
+};
 
 async function supabaseAdminUpsert(path: string, rows: any[]) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in backend env");
   }
+
   const url = `${SUPABASE_URL}/rest/v1/${path}`;
   const res = await fetch(url, {
     method: "POST",
@@ -1460,19 +1457,661 @@ async function supabaseAdminUpsert(path: string, rows: any[]) {
     },
     body: JSON.stringify(rows),
   });
+
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Supabase admin upsert failed: ${res.status} ${text}`);
   }
 }
 
-async function getGoogleAdsToken(owner_id: string) {
-  const row = await supabaseAdminSelectSingle<ProviderTokenRow>(
-    `provider_tokens?select=provider,owner_id,token&owner_id=eq.${owner_id}&provider=eq.google_ads`
-  );
-  if (!row?.token) throw new Error("No google_ads token found for this owner_id");
-  return row.token;
+function normalizeGoogleAdsToken(raw: any): GoogleAdsStoredToken {
+  let parsed = raw;
+
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      throw new Error("Google Ads token stocké invalide: JSON non parsable");
+    }
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Google Ads token stocké invalide");
+  }
+
+  if (!parsed.access_token || typeof parsed.access_token !== "string") {
+    throw new Error("Google Ads access_token introuvable dans le token stocké");
+  }
+
+  return parsed as GoogleAdsStoredToken;
 }
+
+async function getGoogleAdsToken(owner_id: string) {
+  const data = await supabaseAdminRpc<any>("get_provider_token", {
+    p_owner_id: owner_id,
+    p_provider: "google_ads",
+  });
+
+  const token = Array.isArray(data)
+    ? (data[0]?.decrypted_secret ?? data[0] ?? null)
+    : (data?.decrypted_secret ?? data ?? null);
+
+  if (!token) {
+    throw new Error("No google_ads token found for this owner_id");
+  }
+
+  return normalizeGoogleAdsToken(token);
+}
+
+function googleAdsMoneyToDecimal(value: any): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return n / 1_000_000;
+}
+
+function googleAdsNumber(value: any): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function googleAdsString(value: any): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  return String(value);
+}
+
+function googleAdsBool(value: any): boolean | null {
+  if (typeof value === "boolean") return value;
+  return null;
+}
+
+function getGoogleAdsMetricValue(metrics: any, camelKey: string, snakeKey?: string) {
+  if (!metrics || typeof metrics !== "object") return null;
+  if (metrics[camelKey] !== undefined) return metrics[camelKey];
+  if (snakeKey && metrics[snakeKey] !== undefined) return metrics[snakeKey];
+  return null;
+}
+
+async function refreshGoogleAccessTokenIfNeeded(owner_id: string, token: GoogleAdsStoredToken) {
+  if (!isExpired(token)) return token;
+  if (!token?.refresh_token) throw new Error("Token expired and no refresh_token available");
+
+  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: GOOGLE_OAUTH_CLIENT_ID,
+      client_secret: GOOGLE_OAUTH_CLIENT_SECRET,
+      grant_type: "refresh_token",
+      refresh_token: token.refresh_token,
+    }),
+  });
+
+  const tokenText = await tokenRes.text();
+  let tokenJson: any = null;
+
+  try {
+    tokenJson = tokenText ? JSON.parse(tokenText) : null;
+  } catch {
+    tokenJson = null;
+  }
+
+  if (!tokenRes.ok) {
+    throw new Error(`Google refresh_token exchange failed: ${tokenRes.status} ${tokenText}`);
+  }
+
+  const expires_at = tokenJson?.expires_in
+    ? new Date(Date.now() + Number(tokenJson.expires_in) * 1000).toISOString()
+    : null;
+
+  const newToken: GoogleAdsStoredToken = {
+    ...token,
+    ...tokenJson,
+    refresh_token: token.refresh_token,
+    expires_at,
+    stored_at: new Date().toISOString(),
+  };
+
+  await supabaseUpsertProviderTokenVault({
+    owner_id,
+    provider: "google_ads",
+    token: newToken,
+  });
+
+  return newToken;
+}
+
+async function googleAdsFetch(
+  access_token: string,
+  url: string,
+  opts?: { loginCustomerId?: string; method?: string; body?: any }
+) {
+  if (!GOOGLE_ADS_DEVELOPER_TOKEN) {
+    throw new Error("Missing GOOGLE_ADS_DEVELOPER_TOKEN in backend env");
+  }
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${access_token}`,
+    "developer-token": GOOGLE_ADS_DEVELOPER_TOKEN,
+    "Content-Type": "application/json",
+  };
+
+  const loginId = opts?.loginCustomerId || GOOGLE_ADS_LOGIN_CUSTOMER_ID;
+  if (loginId) headers["login-customer-id"] = loginId;
+
+  const res = await fetch(url, {
+    method: opts?.method || "GET",
+    headers,
+    body: opts?.body ? JSON.stringify(opts.body) : undefined,
+  });
+
+  const text = await res.text();
+  let json: any = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+
+  if (!res.ok) {
+    throw new Error(`Google Ads API error ${res.status}: ${text}`);
+  }
+
+  return json;
+}
+
+function collectSearchStreamResults(stream: any): any[] {
+  const chunks = Array.isArray(stream) ? stream : [];
+  const rows: any[] = [];
+
+  for (const chunk of chunks) {
+    const results = Array.isArray(chunk?.results) ? chunk.results : [];
+    for (const row of results) {
+      rows.push(row);
+    }
+  }
+
+  return rows;
+}
+
+async function googleAdsSearchStream(params: {
+  access_token: string;
+  customer_id: string;
+  query: string;
+  login_customer_id?: string;
+}) {
+  const url = `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers/${params.customer_id}/googleAds:searchStream`;
+
+  const stream = await googleAdsFetch(params.access_token, url, {
+    loginCustomerId: params.login_customer_id || undefined,
+    method: "POST",
+    body: { query: params.query },
+  });
+
+  return collectSearchStreamResults(stream);
+}
+
+async function googleAdsSearch(params: {
+  access_token: string;
+  customer_id: string;
+  query: string;
+  login_customer_id?: string;
+}) {
+  const url = `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers/${params.customer_id}/googleAds:search`;
+
+  const out = await googleAdsFetch(params.access_token, url, {
+    loginCustomerId: params.login_customer_id || undefined,
+    method: "POST",
+    body: { query: params.query },
+  });
+
+  return Array.isArray(out?.results) ? out.results : [];
+}
+
+function buildGoogleAdsMetricsRows(params: {
+  owner_id: string;
+  customer_id: string;
+  sourceRows: any[];
+}) {
+  const rows: any[] = [];
+
+  for (const r of params.sourceRows) {
+    const campaign = r?.campaign || {};
+    const adGroup = r?.adGroup || r?.ad_group || {};
+    const adGroupAd = r?.adGroupAd || r?.ad_group_ad || {};
+    const ad = adGroupAd?.ad || {};
+    const segments = r?.segments || {};
+    const metrics = r?.metrics || {};
+
+    rows.push({
+      owner_id: params.owner_id,
+      provider: "google_ads",
+      customer_id: String(params.customer_id),
+
+      campaign_id: googleAdsString(campaign.id),
+      campaign_name: googleAdsString(campaign.name),
+
+      ad_group_id: googleAdsString(adGroup.id),
+      ad_group_name: googleAdsString(adGroup.name),
+
+      ad_id: googleAdsString(ad.id),
+      ad_name: googleAdsString(ad.name),
+
+      date: googleAdsString(segments.date),
+
+      impressions: googleAdsNumber(getGoogleAdsMetricValue(metrics, "impressions", "impressions")),
+      clicks: googleAdsNumber(getGoogleAdsMetricValue(metrics, "clicks", "clicks")),
+      ctr: googleAdsNumber(getGoogleAdsMetricValue(metrics, "ctr", "ctr")),
+
+      cost: googleAdsMoneyToDecimal(getGoogleAdsMetricValue(metrics, "costMicros", "cost_micros")),
+      cpc: googleAdsMoneyToDecimal(getGoogleAdsMetricValue(metrics, "averageCpc", "average_cpc")),
+      cpm: googleAdsMoneyToDecimal(getGoogleAdsMetricValue(metrics, "averageCpm", "average_cpm")),
+
+      conversions: googleAdsNumber(getGoogleAdsMetricValue(metrics, "conversions", "conversions")),
+      conversion_rate: googleAdsNumber(
+        getGoogleAdsMetricValue(
+          metrics,
+          "conversionsFromInteractionsRate",
+          "conversions_from_interactions_rate"
+        )
+      ),
+      cost_per_conversion: googleAdsMoneyToDecimal(
+        getGoogleAdsMetricValue(metrics, "costPerConversion", "cost_per_conversion")
+      ),
+      conversion_value: googleAdsNumber(
+        getGoogleAdsMetricValue(metrics, "conversionsValue", "conversions_value")
+      ),
+
+      video_views: googleAdsNumber(getGoogleAdsMetricValue(metrics, "videoViews", "video_views")),
+      video_view_rate: googleAdsNumber(
+        getGoogleAdsMetricValue(metrics, "videoViewRate", "video_view_rate")
+      ),
+      video_quartile_25_rate: googleAdsNumber(
+        getGoogleAdsMetricValue(metrics, "videoQuartileP25Rate", "video_quartile_p25_rate")
+      ),
+      video_quartile_50_rate: googleAdsNumber(
+        getGoogleAdsMetricValue(metrics, "videoQuartileP50Rate", "video_quartile_p50_rate")
+      ),
+      video_quartile_75_rate: googleAdsNumber(
+        getGoogleAdsMetricValue(metrics, "videoQuartileP75Rate", "video_quartile_p75_rate")
+      ),
+      video_quartile_100_rate: googleAdsNumber(
+        getGoogleAdsMetricValue(metrics, "videoQuartileP100Rate", "video_quartile_p100_rate")
+      ),
+
+      raw: r,
+      updated_at: new Date().toISOString(),
+    });
+  }
+
+  return rows.filter((row) => row.date);
+}
+
+function buildGoogleAdsSegmentRows(params: {
+  owner_id: string;
+  customer_id: string;
+  sourceRows: any[];
+}) {
+  const rows: any[] = [];
+
+  for (const r of params.sourceRows) {
+    const campaign = r?.campaign || {};
+    const adGroup = r?.adGroup || r?.ad_group || {};
+    const adGroupAd = r?.adGroupAd || r?.ad_group_ad || {};
+    const ad = adGroupAd?.ad || {};
+    const segments = r?.segments || {};
+    const metrics = r?.metrics || {};
+
+    rows.push({
+      owner_id: params.owner_id,
+      provider: "google_ads",
+      customer_id: String(params.customer_id),
+
+      campaign_id: googleAdsString(campaign.id),
+      ad_group_id: googleAdsString(adGroup.id),
+      ad_id: googleAdsString(ad.id),
+
+      date: googleAdsString(segments.date),
+
+      age_range: googleAdsString(segments.ageRange || segments.age_range),
+      gender: googleAdsString(segments.gender || segments.gender_type),
+      parental_status: googleAdsString(segments.parentalStatus || segments.parental_status),
+
+      country: googleAdsString(segments.geoTargetCountry || segments.geo_target_country),
+      region: googleAdsString(segments.geoTargetRegion || segments.geo_target_region),
+      city: googleAdsString(segments.geoTargetCity || segments.geo_target_city),
+
+      impressions: googleAdsNumber(getGoogleAdsMetricValue(metrics, "impressions", "impressions")),
+      clicks: googleAdsNumber(getGoogleAdsMetricValue(metrics, "clicks", "clicks")),
+      ctr: googleAdsNumber(getGoogleAdsMetricValue(metrics, "ctr", "ctr")),
+      cost: googleAdsMoneyToDecimal(getGoogleAdsMetricValue(metrics, "costMicros", "cost_micros")),
+      conversions: googleAdsNumber(getGoogleAdsMetricValue(metrics, "conversions", "conversions")),
+      conversion_value: googleAdsNumber(
+        getGoogleAdsMetricValue(metrics, "conversionsValue", "conversions_value")
+      ),
+      video_views: googleAdsNumber(getGoogleAdsMetricValue(metrics, "videoViews", "video_views")),
+      video_view_rate: googleAdsNumber(
+        getGoogleAdsMetricValue(metrics, "videoViewRate", "video_view_rate")
+      ),
+
+      raw: r,
+      updated_at: new Date().toISOString(),
+    });
+  }
+
+  return rows.filter((row) => row.date);
+}
+
+async function syncGoogleAdsMetrics(params: {
+  owner_id: string;
+  customer_id: string;
+  date_from: string;
+  date_to: string;
+  login_customer_id?: string;
+}) {
+  let token = await getGoogleAdsToken(params.owner_id);
+  token = await refreshGoogleAccessTokenIfNeeded(params.owner_id, token);
+
+  const query = `
+    SELECT
+      campaign.id,
+      campaign.name,
+      ad_group.id,
+      ad_group.name,
+      ad_group_ad.ad.id,
+      ad_group_ad.ad.name,
+      segments.date,
+      metrics.impressions,
+      metrics.clicks,
+      metrics.ctr,
+      metrics.cost_micros,
+      metrics.average_cpc,
+      metrics.average_cpm,
+      metrics.conversions,
+      metrics.conversions_value,
+      metrics.cost_per_conversion,
+      metrics.conversions_from_interactions_rate,
+      metrics.video_views,
+      metrics.video_view_rate,
+      metrics.video_quartile_p25_rate,
+      metrics.video_quartile_p50_rate,
+      metrics.video_quartile_p75_rate,
+      metrics.video_quartile_p100_rate
+    FROM ad_group_ad
+    WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
+  `.trim();
+
+  const sourceRows = await googleAdsSearchStream({
+    access_token: String(token.access_token),
+    customer_id: params.customer_id,
+    query,
+    login_customer_id: params.login_customer_id,
+  });
+
+  const rows = buildGoogleAdsMetricsRows({
+    owner_id: params.owner_id,
+    customer_id: params.customer_id,
+    sourceRows,
+  });
+
+  if (rows.length > 0) {
+    await supabaseAdminUpsert(
+      "ads_metrics?on_conflict=owner_id,provider,customer_id,campaign_id,ad_group_id,ad_id,date",
+      rows
+    );
+  }
+
+  return {
+    ok: true,
+    total_rows: rows.length,
+  };
+}
+
+async function syncGoogleAdsSegments(params: {
+  owner_id: string;
+  customer_id: string;
+  date_from: string;
+  date_to: string;
+  login_customer_id?: string;
+}) {
+  let token = await getGoogleAdsToken(params.owner_id);
+  token = await refreshGoogleAccessTokenIfNeeded(params.owner_id, token);
+
+  const query = `
+    SELECT
+      campaign.id,
+      ad_group.id,
+      ad_group_ad.ad.id,
+      segments.date,
+      segments.age_range,
+      segments.gender,
+      segments.parental_status,
+      segments.geo_target_country,
+      segments.geo_target_region,
+      segments.geo_target_city,
+      metrics.impressions,
+      metrics.clicks,
+      metrics.ctr,
+      metrics.cost_micros,
+      metrics.conversions,
+      metrics.conversions_value,
+      metrics.video_views,
+      metrics.video_view_rate
+    FROM ad_group_ad
+    WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
+  `.trim();
+
+  const sourceRows = await googleAdsSearchStream({
+    access_token: String(token.access_token),
+    customer_id: params.customer_id,
+    query,
+    login_customer_id: params.login_customer_id,
+  });
+
+  const rows = buildGoogleAdsSegmentRows({
+    owner_id: params.owner_id,
+    customer_id: params.customer_id,
+    sourceRows,
+  });
+
+  if (rows.length > 0) {
+    await supabaseAdminUpsert(
+      "ads_metrics_segments?on_conflict=owner_id,provider,customer_id,campaign_id,ad_group_id,ad_id,date,age_range,gender,parental_status,country,region,city",
+      rows
+    );
+  }
+
+  return {
+    ok: true,
+    total_rows: rows.length,
+  };
+}
+
+// GET: list accessible customers + upsert google_ads_accounts
+app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.query.owner_id || "");
+    const login_customer_id = String(req.query.login_customer_id || "");
+
+    if (!owner_id) {
+      return res.status(400).json({ error: "Missing owner_id" });
+    }
+
+    let token = await getGoogleAdsToken(owner_id);
+    token = await refreshGoogleAccessTokenIfNeeded(owner_id, token);
+
+    const listUrl = `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers:listAccessibleCustomers`;
+    const listJson = await googleAdsFetch(String(token.access_token), listUrl, {
+      loginCustomerId: login_customer_id || undefined,
+      method: "GET",
+    });
+
+    const resourceNames: string[] = Array.isArray(listJson?.resourceNames)
+      ? listJson.resourceNames
+      : [];
+
+    const customerIds = resourceNames
+      .map((r) => (typeof r === "string" ? r.split("/")[1] : null))
+      .filter(Boolean) as string[];
+
+    const accounts: GoogleAdsCustomerRow[] = [];
+
+    for (const cid of customerIds) {
+      const rows = await googleAdsSearch({
+        access_token: String(token.access_token),
+        customer_id: cid,
+        login_customer_id: login_customer_id || undefined,
+        query: `
+          SELECT
+            customer.id,
+            customer.descriptive_name,
+            customer.currency_code,
+            customer.time_zone,
+            customer.manager
+          FROM customer
+          LIMIT 1
+        `.trim(),
+      });
+
+      const row = rows[0] || {};
+      const c = row?.customer || {};
+
+      accounts.push({
+        owner_id,
+        customer_id: String(c.id || cid),
+        resource_name: `customers/${String(c.id || cid)}`,
+        descriptive_name: c.descriptiveName ?? c.descriptive_name ?? null,
+        currency_code: c.currencyCode ?? c.currency_code ?? null,
+        time_zone: c.timeZone ?? c.time_zone ?? null,
+        is_manager: googleAdsBool(c.manager),
+      });
+    }
+
+    if (accounts.length > 0) {
+      await supabaseAdminUpsert(
+        "google_ads_accounts?on_conflict=owner_id,customer_id",
+        accounts
+      );
+    }
+
+    return res.json({
+      ok: true,
+      count: accounts.length,
+      accounts,
+    });
+  } catch (e: any) {
+    console.error("[google-ads][customers] error:", e);
+    return res.status(500).json({
+      error: e?.message || "Google Ads customers error",
+    });
+  }
+});
+
+// POST: sync core/video/conversion metrics
+app.post("/api/google-ads/sync-metrics", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "");
+    const customer_id = String(req.body?.customer_id || "");
+    const date_from = String(req.body?.date_from || "");
+    const date_to = String(req.body?.date_to || "");
+    const login_customer_id = String(req.body?.login_customer_id || "");
+
+    if (!owner_id) return res.status(400).json({ error: "Missing owner_id" });
+    if (!customer_id) return res.status(400).json({ error: "Missing customer_id" });
+    if (!date_from) return res.status(400).json({ error: "Missing date_from" });
+    if (!date_to) return res.status(400).json({ error: "Missing date_to" });
+
+    const result = await syncGoogleAdsMetrics({
+      owner_id,
+      customer_id,
+      date_from,
+      date_to,
+      login_customer_id: login_customer_id || undefined,
+    });
+
+    return res.json(result);
+  } catch (e: any) {
+    console.error("[google-ads][sync-metrics] error:", e);
+    return res.status(500).json({
+      error: e?.message || "Google Ads sync metrics error",
+    });
+  }
+});
+
+// POST: sync audience segments
+app.post("/api/google-ads/sync-segments", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "");
+    const customer_id = String(req.body?.customer_id || "");
+    const date_from = String(req.body?.date_from || "");
+    const date_to = String(req.body?.date_to || "");
+    const login_customer_id = String(req.body?.login_customer_id || "");
+
+    if (!owner_id) return res.status(400).json({ error: "Missing owner_id" });
+    if (!customer_id) return res.status(400).json({ error: "Missing customer_id" });
+    if (!date_from) return res.status(400).json({ error: "Missing date_from" });
+    if (!date_to) return res.status(400).json({ error: "Missing date_to" });
+
+    const result = await syncGoogleAdsSegments({
+      owner_id,
+      customer_id,
+      date_from,
+      date_to,
+      login_customer_id: login_customer_id || undefined,
+    });
+
+    return res.json(result);
+  } catch (e: any) {
+    console.error("[google-ads][sync-segments] error:", e);
+    return res.status(500).json({
+      error: e?.message || "Google Ads sync segments error",
+    });
+  }
+});
+
+// POST: sync everything in one call
+app.post("/api/google-ads/sync-all", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "");
+    const customer_id = String(req.body?.customer_id || "");
+    const date_from = String(req.body?.date_from || "");
+    const date_to = String(req.body?.date_to || "");
+    const login_customer_id = String(req.body?.login_customer_id || "");
+
+    if (!owner_id) return res.status(400).json({ error: "Missing owner_id" });
+    if (!customer_id) return res.status(400).json({ error: "Missing customer_id" });
+    if (!date_from) return res.status(400).json({ error: "Missing date_from" });
+    if (!date_to) return res.status(400).json({ error: "Missing date_to" });
+
+    const metricsResult = await syncGoogleAdsMetrics({
+      owner_id,
+      customer_id,
+      date_from,
+      date_to,
+      login_customer_id: login_customer_id || undefined,
+    });
+
+    const segmentsResult = await syncGoogleAdsSegments({
+      owner_id,
+      customer_id,
+      date_from,
+      date_to,
+      login_customer_id: login_customer_id || undefined,
+    });
+
+    return res.json({
+      ok: true,
+      metrics: metricsResult,
+      segments: segmentsResult,
+    });
+  } catch (e: any) {
+    console.error("[google-ads][sync-all] error:", e);
+    return res.status(500).json({
+      error: e?.message || "Google Ads sync all error",
+    });
+  }
+});
 
 
 // ==============================
@@ -1589,271 +2228,6 @@ function isExpired(token: any) {
   if (!Number.isFinite(exp)) return false; // if unknown, assume ok
   return Date.now() > exp - 60_000; // refresh 1 min early
 }
-
-async function refreshGoogleAccessTokenIfNeeded(owner_id: string, token: any) {
-  if (!isExpired(token)) return token;
-  if (!token?.refresh_token) throw new Error("Token expired and no refresh_token available");
-
-  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: GOOGLE_OAUTH_CLIENT_ID,
-      client_secret: GOOGLE_OAUTH_CLIENT_SECRET,
-      grant_type: "refresh_token",
-      refresh_token: token.refresh_token,
-    }),
-  });
-
-  if (!tokenRes.ok) {
-    const text = await tokenRes.text();
-    throw new Error(`Google refresh_token exchange failed: ${tokenRes.status} ${text}`);
-  }
-
-  const tokenJson = await tokenRes.json();
-  const expires_at = tokenJson.expires_in
-    ? new Date(Date.now() + Number(tokenJson.expires_in) * 1000).toISOString()
-    : null;
-
-  const newToken = {
-    ...token,
-    ...tokenJson,
-    // Google ne renvoie pas toujours refresh_token au refresh
-    refresh_token: token.refresh_token,
-    expires_at,
-  };
-
-  await supabaseUpsertProviderTokenVault({
-    owner_id,
-    provider: "google_ads",
-    token: newToken,
-  });
-
-  return newToken;
-}
-
-async function googleAdsFetch(
-  access_token: string,
-  url: string,
-  opts?: { loginCustomerId?: string; method?: string; body?: any }
-) {
-  if (!GOOGLE_ADS_DEVELOPER_TOKEN) {
-    throw new Error("Missing GOOGLE_ADS_DEVELOPER_TOKEN in backend env");
-  }
-
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${access_token}`,
-    "developer-token": GOOGLE_ADS_DEVELOPER_TOKEN,
-    "Content-Type": "application/json",
-  };
-
-  const loginId = opts?.loginCustomerId || GOOGLE_ADS_LOGIN_CUSTOMER_ID;
-  if (loginId) headers["login-customer-id"] = loginId;
-
-  const res = await fetch(url, {
-    method: opts?.method || "GET",
-    headers,
-    body: opts?.body ? JSON.stringify(opts.body) : undefined,
-  });
-
-  const text = await res.text();
-  let json: any = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    // keep text
-  }
-
-  if (!res.ok) {
-    throw new Error(`Google Ads API error ${res.status}: ${text}`);
-  }
-  return json;
-}
-
-// GET: list accessible customers + upsert google_ads_accounts
-app.get("/api/google-ads/customers", async (req, res) => {
-  try {
-    const owner_id = String(req.query.owner_id || "");
-    const login_customer_id = String(req.query.login_customer_id || "");
-
-    if (!owner_id) return res.status(400).send("Missing owner_id");
-
-    let token = await getGoogleAdsToken(owner_id);
-    token = await refreshGoogleAccessTokenIfNeeded(owner_id, token);
-
-    // List accessible customers (no customerId needed) :contentReference[oaicite:4]{index=4}
-    const listUrl = `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers:listAccessibleCustomers`;
-    const listJson = await googleAdsFetch(token.access_token, listUrl, {
-      loginCustomerId: login_customer_id || undefined,
-      method: "GET",
-    });
-
-    const resourceNames: string[] = listJson?.resourceNames || [];
-    const customerIds = resourceNames
-      .map((r) => (typeof r === "string" ? r.split("/")[1] : null))
-      .filter(Boolean) as string[];
-
-    // Enrich each customer with basic info using GAQL on that customer
-    const accounts: any[] = [];
-    for (const cid of customerIds) {
-      const searchUrl = `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers/${cid}/googleAds:search`;
-      const q = `
-        SELECT
-          customer.id,
-          customer.descriptive_name,
-          customer.currency_code,
-          customer.time_zone,
-          customer.manager
-        FROM customer
-        LIMIT 1
-      `.trim();
-
-      const out = await googleAdsFetch(token.access_token, searchUrl, {
-        loginCustomerId: login_customer_id || undefined,
-        method: "POST",
-        body: { query: q },
-      });
-
-      const row = out?.results?.[0] || {};
-      const c = row?.customer || {};
-
-      accounts.push({
-        owner_id,
-        customer_id: String(c.id || cid),
-        resource_name: `customers/${String(c.id || cid)}`,
-        descriptive_name: c.descriptiveName || null,
-        currency_code: c.currencyCode || null,
-        time_zone: c.timeZone || null,
-        is_manager: typeof c.manager === "boolean" ? c.manager : null,
-      });
-    }
-
-    // upsert DB
-    if (accounts.length) {
-      await supabaseAdminUpsert("google_ads_accounts?on_conflict=owner_id,customer_id", accounts);
-    }
-
-    return res.json({ accounts });
-  } catch (e: any) {
-    console.error("[google-ads][customers] error:", e);
-    return res.status(500).json({ error: e?.message || "unknown error" });
-  }
-});
-
-// POST: sync daily metrics and upsert google_ads_metrics_daily
-app.post("/api/google-ads/sync-daily", async (req, res) => {
-  try {
-    const {
-      owner_id,
-      customer_id,
-      date_from,
-      date_to,
-      level = "campaign", // "customer" | "campaign"
-      login_customer_id,
-    } = req.body || {};
-
-    if (!owner_id) return res.status(400).send("Missing owner_id");
-    if (!customer_id) return res.status(400).send("Missing customer_id");
-    if (!date_from || !date_to) return res.status(400).send("Missing date_from/date_to");
-
-    let token = await getGoogleAdsToken(String(owner_id));
-    token = await refreshGoogleAccessTokenIfNeeded(String(owner_id), token);
-
-    const from = String(date_from);
-    const to = String(date_to);
-    const lvl = String(level);
-
-    const fromResource = lvl === "customer" ? "customer" : "campaign";
-    const selectEntity =
-      lvl === "customer"
-        ? `customer.id`
-        : `campaign.id, campaign.name, campaign.status`;
-
-    // GAQL example pattern :contentReference[oaicite:5]{index=5}
-    const q = `
-      SELECT
-        ${selectEntity},
-        segments.date,
-        metrics.impressions,
-        metrics.clicks,
-        metrics.ctr,
-        metrics.average_cpc,
-        metrics.cost_micros,
-        metrics.conversions,
-        metrics.conversion_value
-      FROM ${fromResource}
-      WHERE segments.date BETWEEN '${from}' AND '${to}'
-    `.trim();
-
-    const searchUrl = `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers/${customer_id}/googleAds:searchStream`;
-    const stream = await googleAdsFetch(token.access_token, searchUrl, {
-      loginCustomerId: login_customer_id || undefined,
-      method: "POST",
-      body: { query: q },
-    });
-
-    // searchStream returns array of chunks
-    const rows: any[] = [];
-    const chunks = Array.isArray(stream) ? stream : [];
-    for (const ch of chunks) {
-      const results = ch?.results || [];
-      for (const r of results) {
-        const metrics = r?.metrics || {};
-        const seg = r?.segments || {};
-
-        if (lvl === "customer") {
-          const c = r?.customer || {};
-          rows.push({
-            owner_id,
-            customer_id: String(c.id || customer_id),
-            level: "customer",
-            entity_id: String(c.id || customer_id),
-            entity_name: null,
-            date: seg.date,
-            impressions: metrics.impressions ?? null,
-            clicks: metrics.clicks ?? null,
-            cost_micros: metrics.costMicros ?? metrics.cost_micros ?? null,
-            conversions: metrics.conversions ?? null,
-            conversion_value: metrics.conversionValue ?? null,
-            ctr: metrics.ctr ?? null,
-            average_cpc_micros: metrics.averageCpc ?? null, // average_cpc is money type -> micros in REST
-            raw: r,
-          });
-        } else {
-          const c = r?.campaign || {};
-          rows.push({
-            owner_id,
-            customer_id: String(customer_id),
-            level: "campaign",
-            entity_id: String(c.id),
-            entity_name: c.name || null,
-            date: seg.date,
-            impressions: metrics.impressions ?? null,
-            clicks: metrics.clicks ?? null,
-            cost_micros: metrics.costMicros ?? metrics.cost_micros ?? null,
-            conversions: metrics.conversions ?? null,
-            conversion_value: metrics.conversionValue ?? null,
-            ctr: metrics.ctr ?? null,
-            average_cpc_micros: metrics.averageCpc ?? null,
-            raw: r,
-          });
-        }
-      }
-    }
-
-    if (rows.length) {
-      await supabaseAdminUpsert(
-        "google_ads_metrics_daily?on_conflict=owner_id,customer_id,level,entity_id,date",
-        rows
-      );
-    }
-
-    return res.json({ ok: true, inserted_or_merged: rows.length });
-  } catch (e: any) {
-    console.error("[google-ads][sync-daily] error:", e);
-    return res.status(500).json({ error: e?.message || "unknown error" });
-  }
-});
 
 // ==============================
 // Facebook OAuth2
@@ -3606,6 +3980,9 @@ app.get("/auth/google-ads/callback", async (req, res) => {
     return res.redirect(u.toString());
   }
 });
+
+
+
 
 
 app.get("/health", (_, res) => res.json({ ok: true }));
