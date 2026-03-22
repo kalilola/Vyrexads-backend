@@ -2753,7 +2753,119 @@ app.post("/api/facebook/sync-ad-accounts", requireAuth, async (req, res) => {
 });
 
 
+ 
 
+
+/**
+ * POST /api/facebook/sync-ad-campaigns
+ * body: { owner_id: "...", limit?: 100 }
+ *
+ * 1) lit le user token Facebook
+ * 2) lit les comptes pub déjà stockés dans meta_ad_accounts
+ * 3) appelle /act_<account_id>/campaigns pour chaque compte
+ * 4) upsert les campagnes dans meta_ad_campaigns
+ */
+app.post("/api/facebook/sync-ad-campaigns", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "");
+    const limit = Number(req.body?.limit || 100);
+
+    if (!owner_id) {
+      return res.status(400).json({ error: "Missing owner_id" });
+    }
+
+    const token = await getFacebookToken(owner_id);
+    const access_token = getFacebookAccessTokenFromToken(token);
+
+    const adAccounts = await supabaseAdminSelectRows<{
+      account_id: string;
+      name?: string | null;
+    }>(
+      `meta_ad_accounts?select=account_id,name&owner_id=eq.${encodeURIComponent(
+        owner_id
+      )}&provider=eq.facebook&limit=${limit}`
+    );
+
+    let ad_accounts_found = adAccounts.length;
+    let campaigns_found = 0;
+    let stored_campaigns = 0;
+    let failed_accounts = 0;
+    const account_errors: Array<{ account_id: string; error: string }> = [];
+
+    for (const acc of adAccounts) {
+      const account_id = String(acc?.account_id || "");
+      if (!account_id) continue;
+
+      const ad_account_id_act = account_id.startsWith("act_")
+        ? account_id
+        : `act_${account_id}`;
+
+      try {
+        const campaignsJson = await facebookGraphGetWithAccessToken(
+          `${ad_account_id_act}/campaigns`,
+          access_token,
+          {
+            fields:
+              "id,account_id,name,objective,status,effective_status,created_time,updated_time,start_time,stop_time",
+            limit,
+          }
+        );
+
+        const campaignsRaw = Array.isArray(campaignsJson?.data) ? campaignsJson.data : [];
+        campaigns_found += campaignsRaw.length;
+
+        const rows = campaignsRaw
+          .filter((c: any) => c?.id)
+          .map((c: any) => ({
+            owner_id,
+            provider: "facebook",
+            campaign_id: String(c.id),
+            account_id: String(c?.account_id || account_id),
+            ad_account_id_act: `act_${String(c?.account_id || account_id)}`,
+            name: String(c?.name || ""),
+            objective: c?.objective ?? null,
+            status: c?.status ?? null,
+            effective_status: c?.effective_status ?? null,
+            created_time: c?.created_time ?? null,
+            updated_time: c?.updated_time ?? null,
+            start_time: c?.start_time ?? null,
+            stop_time: c?.stop_time ?? null,
+            fetched_at: new Date().toISOString(),
+            raw: c,
+          }));
+
+        if (rows.length > 0) {
+          await supabaseAdminUpsert(
+            "meta_ad_campaigns?on_conflict=owner_id,provider,campaign_id",
+            rows
+          );
+          stored_campaigns += rows.length;
+        }
+      } catch (e: any) {
+        failed_accounts += 1;
+        account_errors.push({
+          account_id,
+          error: e?.message || "Unknown error",
+        });
+      }
+    }
+
+    return res.json({
+      ok: true,
+      owner_id,
+      ad_accounts_found,
+      campaigns_found,
+      stored_campaigns,
+      failed_accounts,
+      account_errors,
+    });
+  } catch (e: any) {
+    console.error("[facebook][sync-ad-campaigns] error:", e);
+    return res.status(500).json({
+      error: e?.message || "Facebook sync ad campaigns error",
+    });
+  }
+});
 
 
 app.get("/health", (_, res) => res.json({ ok: true }));
