@@ -3163,6 +3163,321 @@ app.post("/api/facebook/sync-ad-campaign-metrics", requireAuth, async (req, res)
 
 
 
+/**
+ * POST /api/facebook/sync-ads-all
+ * body: { owner_id: "...", limit?: 100 }
+ *
+ * Pipeline complet ads :
+ * 1) récupère les comptes pub via /me/adaccounts
+ * 2) upsert meta_ad_accounts
+ * 3) récupère les campagnes de chaque compte
+ * 4) upsert meta_ad_campaigns
+ * 5) récupère les ads + insights de chaque compte
+ * 6) agrège les métriques par campaign_id
+ * 7) met à jour meta_ad_campaigns
+ */
+app.post("/api/facebook/sync-ads-all", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "");
+    const limit = Number(req.body?.limit || 100);
+
+    if (!owner_id) {
+      return res.status(400).json({ error: "Missing owner_id" });
+    }
+
+    const token = await getFacebookToken(owner_id);
+    const access_token = getFacebookAccessTokenFromToken(token);
+
+    // 1) Ad accounts
+    const adAccountsJson = await facebookGraphGetWithAccessToken("me/adaccounts", access_token, {
+      fields: "id,account_id,name,currency,timezone_id,timezone_name",
+      limit,
+    });
+
+    const accountsRaw = Array.isArray(adAccountsJson?.data) ? adAccountsJson.data : [];
+
+    const accountRows = accountsRaw
+      .filter((a: any) => a?.account_id)
+      .map((a: any) => ({
+        owner_id,
+        provider: "facebook",
+        account_id: String(a.account_id),
+        name: String(a?.name || ""),
+        currency: a?.currency ?? null,
+        timezone_id: a?.timezone_id != null ? String(a.timezone_id) : null,
+        timezone_name: a?.timezone_name ?? null,
+        fetched_at: new Date().toISOString(),
+        raw: a,
+      }));
+
+    if (accountRows.length > 0) {
+      await supabaseAdminUpsert(
+        "meta_ad_accounts?on_conflict=owner_id,provider,account_id",
+        accountRows
+      );
+    }
+
+    let campaigns_synced = 0;
+    let campaign_metrics_synced = 0;
+    let failed_accounts = 0;
+    const account_errors: Array<{ account_id: string; error: string }> = [];
+
+    // 2) campaigns + metrics per account
+    for (const acc of accountsRaw) {
+      const account_id = String(acc?.account_id || "");
+      if (!account_id) continue;
+
+      const ad_account_id_act = account_id.startsWith("act_")
+        ? account_id
+        : `act_${account_id}`;
+
+      try {
+        // campaigns
+        const campaignsJson = await facebookGraphGetWithAccessToken(
+          `${ad_account_id_act}/campaigns`,
+          access_token,
+          {
+            fields:
+              "id,account_id,name,objective,status,effective_status,created_time,updated_time,start_time,stop_time",
+            limit,
+          }
+        );
+
+        const campaignsRaw = Array.isArray(campaignsJson?.data) ? campaignsJson.data : [];
+
+        const campaignRows = campaignsRaw
+          .filter((c: any) => c?.id)
+          .map((c: any) => ({
+            owner_id,
+            provider: "facebook",
+            campaign_id: String(c.id),
+            account_id: String(c?.account_id || account_id),
+            ad_account_id_act: `act_${String(c?.account_id || account_id)}`,
+            name: String(c?.name || ""),
+            objective: c?.objective ?? null,
+            status: c?.status ?? null,
+            effective_status: c?.effective_status ?? null,
+            created_time: c?.created_time ?? null,
+            updated_time: c?.updated_time ?? null,
+            start_time: c?.start_time ?? null,
+            stop_time: c?.stop_time ?? null,
+            fetched_at: new Date().toISOString(),
+            raw: c,
+          }));
+
+        if (campaignRows.length > 0) {
+          await supabaseAdminUpsert(
+            "meta_ad_campaigns?on_conflict=owner_id,provider,campaign_id",
+            campaignRows
+          );
+          campaigns_synced += campaignRows.length;
+        }
+
+        // creatives + insights
+        const [adsJson, insightsJson] = await Promise.all([
+          facebookGraphGetWithAccessToken(`${ad_account_id_act}/ads`, access_token, {
+            fields:
+              "id,name,creative{id,object_story_id,object_story_spec,asset_feed_spec,image_hash,video_id,instagram_permalink_url},effective_object_story_id",
+            limit,
+          }),
+          facebookGraphGetWithAccessToken(`${ad_account_id_act}/insights`, access_token, {
+            fields:
+              "account_id,account_name,campaign_id,ad_id,ad_name,impressions,clicks,spend,reach,cpm,cpc,ctr,video_p25_watched_actions,video_p50_watched_actions,video_p75_watched_actions,video_p95_watched_actions,video_p100_watched_actions,video_play_actions,actions,date_start,date_stop",
+            level: "ad",
+            date_preset: "maximum",
+            action_breakdowns: "action_type",
+            limit,
+          }),
+        ]);
+
+        const adsRaw = Array.isArray(adsJson?.data) ? adsJson.data : [];
+        const insightsRaw = Array.isArray(insightsJson?.data) ? insightsJson.data : [];
+
+        const creativeByAdId = new Map<
+          string,
+          {
+            creative_id: string | null;
+            object_story_id: string | null;
+            raw_creative: any;
+          }
+        >();
+
+        for (const ad of adsRaw) {
+          const ad_id = String(ad?.id || "");
+          if (!ad_id) continue;
+
+          creativeByAdId.set(ad_id, {
+            creative_id: ad?.creative?.id ? String(ad.creative.id) : null,
+            object_story_id:
+              ad?.creative?.object_story_id
+                ? String(ad.creative.object_story_id)
+                : ad?.effective_object_story_id
+                ? String(ad.effective_object_story_id)
+                : null,
+            raw_creative: ad?.creative ?? null,
+          });
+        }
+
+        const campaignMap = new Map<
+          string,
+          {
+            owner_id: string;
+            provider: string;
+            campaign_id: string;
+            account_id: string;
+            ad_account_id_act: string;
+            impressions: number;
+            clicks: number;
+            reach: number;
+            spend: number;
+            cpm: number | null;
+            cpc: number | null;
+            ctr: number | null;
+            creative_ids: Set<string>;
+            object_story_ids: Set<string>;
+            actions: Record<string, number>;
+            video_play_actions: Record<string, number>;
+            video_p25_watched_actions: Record<string, number>;
+            video_p50_watched_actions: Record<string, number>;
+            video_p75_watched_actions: Record<string, number>;
+            video_p95_watched_actions: Record<string, number>;
+            video_p100_watched_actions: Record<string, number>;
+            date_start: string | null;
+            date_stop: string | null;
+            metrics_raw: any[];
+            raw_creative: any | null;
+          }
+        >();
+
+        for (const row of insightsRaw) {
+          const campaign_id = String(row?.campaign_id || "");
+          const ad_id = String(row?.ad_id || "");
+          if (!campaign_id) continue;
+
+          if (!campaignMap.has(campaign_id)) {
+            campaignMap.set(campaign_id, {
+              owner_id,
+              provider: "facebook",
+              campaign_id,
+              account_id: String(row?.account_id || account_id),
+              ad_account_id_act: `act_${String(row?.account_id || account_id)}`,
+              impressions: 0,
+              clicks: 0,
+              reach: 0,
+              spend: 0,
+              cpm: null,
+              cpc: null,
+              ctr: null,
+              creative_ids: new Set<string>(),
+              object_story_ids: new Set<string>(),
+              actions: {},
+              video_play_actions: {},
+              video_p25_watched_actions: {},
+              video_p50_watched_actions: {},
+              video_p75_watched_actions: {},
+              video_p95_watched_actions: {},
+              video_p100_watched_actions: {},
+              date_start: row?.date_start ?? null,
+              date_stop: row?.date_stop ?? null,
+              metrics_raw: [],
+              raw_creative: null,
+            });
+          }
+
+          const camp = campaignMap.get(campaign_id)!;
+          const creative = creativeByAdId.get(ad_id);
+
+          camp.impressions += Number(row?.impressions ?? 0) || 0;
+          camp.clicks += Number(row?.clicks ?? 0) || 0;
+          camp.reach += Number(row?.reach ?? 0) || 0;
+          camp.spend += Number(row?.spend ?? 0) || 0;
+
+          if (row?.cpm != null) camp.cpm = Number(row.cpm) || 0;
+          if (row?.cpc != null) camp.cpc = Number(row.cpc) || 0;
+          if (row?.ctr != null) camp.ctr = Number(row.ctr) || 0;
+
+          if (creative?.creative_id) camp.creative_ids.add(creative.creative_id);
+          if (creative?.object_story_id) camp.object_story_ids.add(creative.object_story_id);
+          if (creative?.raw_creative && !camp.raw_creative) camp.raw_creative = creative.raw_creative;
+
+          mergeNumberMaps(camp.actions, fbActionsArrayToObject(row?.actions));
+          mergeNumberMaps(camp.video_play_actions, fbActionsArrayToObject(row?.video_play_actions));
+          mergeNumberMaps(camp.video_p25_watched_actions, fbActionsArrayToObject(row?.video_p25_watched_actions));
+          mergeNumberMaps(camp.video_p50_watched_actions, fbActionsArrayToObject(row?.video_p50_watched_actions));
+          mergeNumberMaps(camp.video_p75_watched_actions, fbActionsArrayToObject(row?.video_p75_watched_actions));
+          mergeNumberMaps(camp.video_p95_watched_actions, fbActionsArrayToObject(row?.video_p95_watched_actions));
+          mergeNumberMaps(camp.video_p100_watched_actions, fbActionsArrayToObject(row?.video_p100_watched_actions));
+
+          camp.metrics_raw.push({
+            ad_id,
+            insight: row,
+            creative: creative ?? null,
+          });
+        }
+
+        const metricRows = Array.from(campaignMap.values()).map((camp) => ({
+          owner_id: camp.owner_id,
+          provider: camp.provider,
+          campaign_id: camp.campaign_id,
+          account_id: camp.account_id,
+          ad_account_id_act: camp.ad_account_id_act,
+          impressions: camp.impressions,
+          clicks: camp.clicks,
+          reach: camp.reach,
+          spend: Math.round(camp.spend * 100) / 100,
+          cpm: camp.cpm,
+          cpc: camp.cpc,
+          ctr: camp.ctr,
+          creative_ids: Array.from(camp.creative_ids),
+          object_story_ids: Array.from(camp.object_story_ids),
+          date_start: camp.date_start,
+          date_stop: camp.date_stop,
+          metrics_raw: camp.metrics_raw,
+          actions: camp.actions,
+          video_play_actions: camp.video_play_actions,
+          video_p25_watched_actions: camp.video_p25_watched_actions,
+          video_p50_watched_actions: camp.video_p50_watched_actions,
+          video_p75_watched_actions: camp.video_p75_watched_actions,
+          video_p95_watched_actions: camp.video_p95_watched_actions,
+          video_p100_watched_actions: camp.video_p100_watched_actions,
+          raw_creative: camp.raw_creative,
+          fetched_at: new Date().toISOString(),
+        }));
+
+        if (metricRows.length > 0) {
+          await supabaseAdminUpsert(
+            "meta_ad_campaigns?on_conflict=owner_id,provider,campaign_id",
+            metricRows
+          );
+          campaign_metrics_synced += metricRows.length;
+        }
+      } catch (e: any) {
+        failed_accounts += 1;
+        account_errors.push({
+          account_id,
+          error: e?.message || "Unknown error",
+        });
+      }
+    }
+
+    return res.json({
+      ok: true,
+      owner_id,
+      ad_accounts_found: accountsRaw.length,
+      ad_accounts_synced: accountRows.length,
+      campaigns_synced,
+      campaign_metrics_synced,
+      failed_accounts,
+      account_errors,
+    });
+  } catch (e: any) {
+    console.error("[facebook][sync-ads-all] error:", e);
+    return res.status(500).json({
+      error: e?.message || "Facebook sync ads all error",
+    });
+  }
+});
+
 
 app.get("/health", (_, res) => res.json({ ok: true }));
 
