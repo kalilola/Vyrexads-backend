@@ -3480,6 +3480,134 @@ app.post("/api/facebook/sync-ads-all", requireAuth, async (req, res) => {
 });
 
 
+/**
+ * START:
+ * GET /auth/google-ads/start?owner_id=xxx&return_to=https://ton-front.com/analytics
+ */
+app.get("/auth/google-ads/start", async (req, res) => {
+  try {
+    const owner_id = String(req.query.owner_id || "");
+    const return_to = String(req.query.return_to || FRONTEND_RETURN_URL);
+
+    if (!owner_id) {
+      return res.status(400).send("Missing owner_id");
+    }
+
+    if (!GOOGLE_OAUTH_CLIENT_ID || !GOOGLE_OAUTH_CLIENT_SECRET || !GOOGLE_OAUTH_REDIRECT_URI) {
+      return res.status(500).send("Missing Google OAuth env vars");
+    }
+
+    const state = signState({
+      owner_id,
+      return_to,
+      provider: "google_ads",
+      t: Date.now(),
+    });
+
+    const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    authUrl.searchParams.set("client_id", GOOGLE_OAUTH_CLIENT_ID);
+    authUrl.searchParams.set("redirect_uri", GOOGLE_OAUTH_REDIRECT_URI);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("access_type", "offline");
+    authUrl.searchParams.set("prompt", "consent");
+    authUrl.searchParams.set("scope", "https://www.googleapis.com/auth/adwords");
+    authUrl.searchParams.set("state", state);
+
+    return res.redirect(authUrl.toString());
+  } catch (e: any) {
+    console.error("[google-ads][start] error:", e);
+    return res.status(500).send("Google Ads OAuth start error");
+  }
+});
+
+/**
+ * CALLBACK:
+ * GET /auth/google-ads/callback?code=...&state=...
+ */
+app.get("/auth/google-ads/callback", async (req, res) => {
+  try {
+    const code = String(req.query.code || "");
+    const state = String(req.query.state || "");
+    const error = String(req.query.error || "");
+
+    const parsed = state ? verifyState(state) : null;
+    const return_to = String(parsed?.return_to || FRONTEND_RETURN_URL);
+
+    if (error) {
+      const u = new URL(return_to);
+      u.searchParams.set("google_ads", "error");
+      u.searchParams.set("reason", error);
+      return res.redirect(u.toString());
+    }
+
+    if (!code) {
+      return res.status(400).send("Missing code");
+    }
+
+    if (!parsed) {
+      return res.status(400).send("Invalid state");
+    }
+
+    const owner_id = String(parsed.owner_id || "");
+    if (!owner_id) {
+      return res.status(400).send("Missing owner_id");
+    }
+
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: GOOGLE_OAUTH_CLIENT_ID,
+        client_secret: GOOGLE_OAUTH_CLIENT_SECRET,
+        code,
+        grant_type: "authorization_code",
+        redirect_uri: GOOGLE_OAUTH_REDIRECT_URI,
+      }),
+    });
+
+    const tokenText = await tokenRes.text();
+    let tokenJson: any = null;
+
+    try {
+      tokenJson = tokenText ? JSON.parse(tokenText) : null;
+    } catch {
+      tokenJson = null;
+    }
+
+    if (!tokenRes.ok || !tokenJson?.access_token) {
+      const u = new URL(return_to);
+      u.searchParams.set("google_ads", "error");
+      u.searchParams.set("reason", "token_exchange_failed");
+      return res.redirect(u.toString());
+    }
+
+    const expires_at = tokenJson?.expires_in
+      ? new Date(Date.now() + Number(tokenJson.expires_in) * 1000).toISOString()
+      : null;
+
+    await supabaseUpsertProviderTokenVault({
+      owner_id,
+      provider: "google_ads",
+      token: {
+        ...tokenJson,
+        expires_at,
+        stored_at: new Date().toISOString(),
+      },
+    });
+
+    const u = new URL(return_to);
+    u.searchParams.set("google_ads", "connected");
+    return res.redirect(u.toString());
+  } catch (e: any) {
+    console.error("[google-ads][callback] error:", e);
+    const u = new URL(FRONTEND_RETURN_URL);
+    u.searchParams.set("google_ads", "error");
+    u.searchParams.set("reason", e?.message || "unknown");
+    return res.redirect(u.toString());
+  }
+});
+
+
 app.get("/health", (_, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
