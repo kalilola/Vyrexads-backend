@@ -316,7 +316,8 @@ const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || "";
 const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || "";
 const GOOGLE_OAUTH_REDIRECT_URI =
   process.env.GOOGLE_OAUTH_REDIRECT_URI ||
-  "http://localhost:3001/auth/google-ads/callback";
+  "https://vyrexads-backend.onrender.com/auth/google-ads/callback";
+  
 
 // ==============================
 // TikTok OAuth
