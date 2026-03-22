@@ -2487,6 +2487,206 @@ app.post("/api/facebook/sync-page-post-metrics-batch", requireAuth, async (req, 
 
 
 
+/**
+ * POST /api/facebook/sync-organic-all
+ * body: { owner_id: "...", page_limit?: 100, post_limit?: 100 }
+ *
+ * Pipeline complet organique :
+ * 1) récupère les pages via /me/accounts avec le user token
+ * 2) upsert meta_pages
+ * 3) stocke chaque page access token chiffré
+ * 4) pour chaque page, récupère les posts
+ * 5) upsert meta_page_posts
+ * 6) pour chaque post, récupère les metrics
+ * 7) met à jour meta_page_posts
+ */
+app.post("/api/facebook/sync-organic-all", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "");
+    const page_limit = Number(req.body?.page_limit || 100);
+    const post_limit = Number(req.body?.post_limit || 100);
+
+    if (!owner_id) {
+      return res.status(400).json({ error: "Missing owner_id" });
+    }
+
+    // 1) User token Facebook
+    const token = await getFacebookToken(owner_id);
+    const access_token = getFacebookAccessTokenFromToken(token);
+
+    // 2) Pages
+    const pagesJson = await facebookGraphGetWithAccessToken("me/accounts", access_token, {
+      fields: "id,name,category,access_token,tasks",
+      limit: page_limit,
+    });
+
+    const pagesRaw = Array.isArray(pagesJson?.data) ? pagesJson.data : [];
+
+    const metaPageRows = pagesRaw
+      .filter((p: any) => p?.id)
+      .map((p: any) => ({
+        owner_id,
+        provider: "facebook",
+        page_id: String(p.id),
+        name: String(p?.name || ""),
+        category: p?.category ?? null,
+        tasks: Array.isArray(p?.tasks) ? p.tasks : [],
+        raw: p,
+      }));
+
+    if (metaPageRows.length > 0) {
+      await supabaseAdminUpsert(
+        "meta_pages?on_conflict=owner_id,provider,page_id",
+        metaPageRows
+      );
+    }
+
+    let stored_page_tokens = 0;
+    let pages_synced = 0;
+    let posts_synced = 0;
+    let post_metrics_synced = 0;
+    let failed_pages = 0;
+    const page_errors: Array<{ page_id: string; error: string }> = [];
+
+    for (const p of pagesRaw) {
+      const page_id = String(p?.id || "");
+      const page_name = p?.name ?? null;
+      const page_access_token = String(p?.access_token || "");
+
+      if (!page_id) continue;
+
+      try {
+        // 3) Store encrypted page token
+        if (page_access_token) {
+          await upsertFacebookPageAccessToken({
+            owner_id,
+            page_id,
+            page_name,
+            page_access_token,
+          });
+          stored_page_tokens += 1;
+        }
+
+        // 4) Fetch posts for the page
+        const postsJson = await facebookGraphGetWithAccessToken(`${page_id}/posts`, page_access_token, {
+          fields: "id,message,created_time,permalink_url,permalink",
+          limit: post_limit,
+        });
+
+        const postsRaw = Array.isArray(postsJson?.data) ? postsJson.data : [];
+
+        const postRows = postsRaw
+          .filter((post: any) => post?.id)
+          .map((post: any) => ({
+            owner_id,
+            provider: "facebook",
+            page_id,
+            post_id: String(post.id),
+            message: post?.message ?? null,
+            created_time: post?.created_time ?? null,
+            permalink: post?.permalink ?? null,
+            permalink_url: post?.permalink_url ?? null,
+            raw: post,
+          }));
+
+        if (postRows.length > 0) {
+          await supabaseAdminUpsert(
+            "meta_page_posts?on_conflict=owner_id,provider,post_id",
+            postRows
+          );
+        }
+
+        posts_synced += postRows.length;
+
+        // 5) Fetch metrics for each post
+        for (const post of postsRaw) {
+          const post_id = String(post?.id || "");
+          if (!post_id) continue;
+
+          try {
+            const [insightsJson, socialJson] = await Promise.all([
+              facebookGraphGetWithAccessToken(`${post_id}/insights`, page_access_token, {
+                metric: "post_impressions_unique",
+              }),
+              facebookGraphGetWithAccessToken(post_id, page_access_token, {
+                fields:
+                  "created_time,permalink_url,shares,comments.summary(true).limit(0),likes.summary(true).limit(0),reactions.summary(true).limit(0),message",
+              }),
+            ]);
+
+            const impressionsMetric = Array.isArray(insightsJson?.data)
+              ? insightsJson.data.find((x: any) => x?.name === "post_impressions_unique")
+              : null;
+
+            const impressions_unique = Number(impressionsMetric?.values?.[0]?.value ?? 0) || 0;
+            const shares = Number(socialJson?.shares?.count ?? 0) || 0;
+            const comments_count = Number(socialJson?.comments?.summary?.total_count ?? 0) || 0;
+            const likes_count = Number(socialJson?.likes?.summary?.total_count ?? 0) || 0;
+            const reactions_count = Number(socialJson?.reactions?.summary?.total_count ?? 0) || 0;
+
+            await supabaseAdminUpsert(
+              "meta_page_posts?on_conflict=owner_id,provider,post_id",
+              [
+                {
+                  owner_id,
+                  provider: "facebook",
+                  page_id,
+                  post_id,
+                  message: typeof socialJson?.message === "string" ? socialJson.message : null,
+                  created_time: socialJson?.created_time ?? null,
+                  permalink_url: socialJson?.permalink_url ?? null,
+                  impressions_unique,
+                  shares,
+                  comments_count,
+                  likes_count,
+                  reactions_count,
+                  metrics_fetched_at: new Date().toISOString(),
+                  metrics_raw: {
+                    impressions: insightsJson,
+                    social: socialJson,
+                  },
+                  raw: socialJson,
+                },
+              ]
+            );
+
+            post_metrics_synced += 1;
+          } catch {
+            // on laisse passer les erreurs post-level
+          }
+        }
+
+        pages_synced += 1;
+      } catch (e: any) {
+        failed_pages += 1;
+        page_errors.push({
+          page_id,
+          error: e?.message || "Unknown error",
+        });
+      }
+    }
+
+    return res.json({
+      ok: true,
+      owner_id,
+      pages_found: pagesRaw.length,
+      pages_synced,
+      stored_meta_pages: metaPageRows.length,
+      stored_page_tokens,
+      posts_synced,
+      post_metrics_synced,
+      failed_pages,
+      page_errors,
+    });
+  } catch (e: any) {
+    console.error("[facebook][sync-organic-all] error:", e);
+    return res.status(500).json({
+      error: e?.message || "Facebook sync organic all error",
+    });
+  }
+});
+
+
 
 
 app.get("/health", (_, res) => res.json({ ok: true }));
