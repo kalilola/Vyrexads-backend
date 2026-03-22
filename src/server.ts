@@ -2689,6 +2689,73 @@ app.post("/api/facebook/sync-organic-all", requireAuth, async (req, res) => {
 
 
 
+/**
+ * POST /api/facebook/sync-ad-accounts
+ * body: { owner_id: "...", limit?: 100 }
+ *
+ * 1) lit le user token Facebook
+ * 2) appelle /me/adaccounts
+ * 3) upsert les comptes pub dans meta_ad_accounts
+ */
+app.post("/api/facebook/sync-ad-accounts", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "");
+    const limit = Number(req.body?.limit || 100);
+
+    if (!owner_id) {
+      return res.status(400).json({ error: "Missing owner_id" });
+    }
+
+    const token = await getFacebookToken(owner_id);
+    const access_token = getFacebookAccessTokenFromToken(token);
+
+    const adAccountsJson = await facebookGraphGetWithAccessToken("me/adaccounts", access_token, {
+      fields: "id,account_id,name,currency,timezone_id,timezone_name",
+      limit,
+    });
+
+    const accountsRaw = Array.isArray(adAccountsJson?.data) ? adAccountsJson.data : [];
+
+    const rows = accountsRaw
+      .filter((a: any) => a?.account_id)
+      .map((a: any) => ({
+        owner_id,
+        provider: "facebook",
+        account_id: String(a.account_id),
+        name: String(a?.name || ""),
+        currency: a?.currency ?? null,
+        timezone_id: a?.timezone_id != null ? String(a.timezone_id) : null,
+        timezone_name: a?.timezone_name ?? null,
+        fetched_at: new Date().toISOString(),
+        raw: a,
+      }));
+
+    if (rows.length > 0) {
+      await supabaseAdminUpsert(
+        "meta_ad_accounts?on_conflict=owner_id,provider,account_id",
+        rows
+      );
+    }
+
+    return res.json({
+      ok: true,
+      owner_id,
+      ad_accounts_found: accountsRaw.length,
+      stored_ad_accounts: rows.length,
+      account_ids: rows.map((r: { account_id: string }) => r.account_id),
+    });
+  } catch (e: any) {
+    console.error("[facebook][sync-ad-accounts] error:", e);
+    return res.status(500).json({
+      error: e?.message || "Facebook sync ad accounts error",
+    });
+  }
+});
+
+
+
+
+
 app.get("/health", (_, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
