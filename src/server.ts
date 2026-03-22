@@ -2371,6 +2371,123 @@ app.post("/api/facebook/sync-page-post-metrics", requireAuth, async (req, res) =
 
 
 
+/**
+ * POST /api/facebook/sync-page-post-metrics-batch
+ * body: { owner_id: "...", page_id: "...", limit?: 100 }
+ */
+app.post("/api/facebook/sync-page-post-metrics-batch", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "");
+    const page_id = String(req.body?.page_id || "");
+    const limit = Number(req.body?.limit || 100);
+
+    if (!owner_id) {
+      return res.status(400).json({ error: "Missing owner_id" });
+    }
+    if (!page_id) {
+      return res.status(400).json({ error: "Missing page_id" });
+    }
+
+    const existingPosts = await supabaseAdminSelectRows<{
+      post_id: string;
+    }>(
+      `meta_page_posts?select=post_id&owner_id=eq.${encodeURIComponent(
+        owner_id
+      )}&provider=eq.facebook&page_id=eq.${encodeURIComponent(
+        page_id
+      )}&order=created_time.desc.nullslast&limit=${limit}`
+    );
+
+    const postIds = existingPosts
+      .map((row) => String(row.post_id || ""))
+      .filter(Boolean);
+
+    const pageToken = await getFacebookPageToken(owner_id, page_id);
+    const page_access_token = getFacebookPageAccessTokenFromStoredToken(pageToken);
+
+    let synced_posts = 0;
+    let failed_posts = 0;
+    const errors: Array<{ post_id: string; error: string }> = [];
+
+    for (const post_id of postIds) {
+      try {
+        const [insightsJson, socialJson] = await Promise.all([
+          facebookGraphGetWithAccessToken(`${post_id}/insights`, page_access_token, {
+            metric: "post_impressions_unique",
+          }),
+          facebookGraphGetWithAccessToken(post_id, page_access_token, {
+            fields:
+              "created_time,permalink_url,shares,comments.summary(true).limit(0),likes.summary(true).limit(0),reactions.summary(true).limit(0),message",
+          }),
+        ]);
+
+        const impressionsMetric = Array.isArray(insightsJson?.data)
+          ? insightsJson.data.find((x: any) => x?.name === "post_impressions_unique")
+          : null;
+
+        const impressions_unique = Number(impressionsMetric?.values?.[0]?.value ?? 0) || 0;
+        const shares = Number(socialJson?.shares?.count ?? 0) || 0;
+        const comments_count = Number(socialJson?.comments?.summary?.total_count ?? 0) || 0;
+        const likes_count = Number(socialJson?.likes?.summary?.total_count ?? 0) || 0;
+        const reactions_count = Number(socialJson?.reactions?.summary?.total_count ?? 0) || 0;
+
+        const row = {
+          owner_id,
+          provider: "facebook",
+          page_id,
+          post_id,
+          message: typeof socialJson?.message === "string" ? socialJson.message : null,
+          created_time: socialJson?.created_time ?? null,
+          permalink_url: socialJson?.permalink_url ?? null,
+          impressions_unique,
+          shares,
+          comments_count,
+          likes_count,
+          reactions_count,
+          metrics_fetched_at: new Date().toISOString(),
+          metrics_raw: {
+            impressions: insightsJson,
+            social: socialJson,
+          },
+          raw: socialJson,
+        };
+
+        await supabaseAdminUpsert(
+          "meta_page_posts?on_conflict=owner_id,provider,post_id",
+          [row]
+        );
+
+        synced_posts += 1;
+      } catch (e: any) {
+        failed_posts += 1;
+        errors.push({
+          post_id,
+          error: e?.message || "Unknown error",
+        });
+      }
+    }
+
+    return res.json({
+      ok: true,
+      owner_id,
+      page_id,
+      total_posts: postIds.length,
+      synced_posts,
+      failed_posts,
+      errors,
+    });
+  } catch (e: any) {
+    console.error("[facebook][sync-page-post-metrics-batch] error:", e);
+    return res.status(500).json({
+      error: e?.message || "Facebook sync page post metrics batch error",
+    });
+  }
+});
+
+
+
+
+
 
 app.get("/health", (_, res) => res.json({ ok: true }));
 
