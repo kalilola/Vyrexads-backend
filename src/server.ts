@@ -1938,8 +1938,22 @@ app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Missing owner_id" });
     }
 
+    console.log("[google-ads][customers] START", {
+      owner_id,
+      login_customer_id: login_customer_id || null,
+    });
+
     let token = await getGoogleAdsToken(owner_id);
+    console.log("[google-ads][customers] token loaded", {
+      has_access_token: Boolean(token?.access_token),
+      has_refresh_token: Boolean(token?.refresh_token),
+      expires_at: token?.expires_at || null,
+    });
+
     token = await refreshGoogleAccessTokenIfNeeded(owner_id, token);
+    console.log("[google-ads][customers] token ready", {
+      expires_at: token?.expires_at || null,
+    });
 
     const listUrl = `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers:listAccessibleCustomers`;
     const listJson = await googleAdsFetch(String(token.access_token), listUrl, {
@@ -1951,13 +1965,19 @@ app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
       ? listJson.resourceNames
       : [];
 
+    console.log("[google-ads][customers] accessible resourceNames", resourceNames);
+
     const customerIds = resourceNames
       .map((r) => (typeof r === "string" ? r.split("/")[1] : null))
       .filter(Boolean) as string[];
 
+    console.log("[google-ads][customers] customerIds", customerIds);
+
     const accounts: GoogleAdsCustomerRow[] = [];
 
     for (const cid of customerIds) {
+      console.log("[google-ads][customers] reading customer", { cid });
+
       const rows = await googleAdsSearch({
         access_token: String(token.access_token),
         customer_id: cid,
@@ -1977,7 +1997,7 @@ app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
       const row = rows[0] || {};
       const c = row?.customer || {};
 
-      accounts.push({
+      const accountRow = {
         owner_id,
         customer_id: String(c.id || cid),
         resource_name: `customers/${String(c.id || cid)}`,
@@ -1985,14 +2005,24 @@ app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
         currency_code: c.currencyCode ?? c.currency_code ?? null,
         time_zone: c.timeZone ?? c.time_zone ?? null,
         is_manager: googleAdsBool(c.manager),
-      });
+      };
+
+      console.log("[google-ads][customers] customer row built", accountRow);
+
+      accounts.push(accountRow);
     }
 
     if (accounts.length > 0) {
+      console.log("[google-ads][customers] upserting accounts", {
+        count: accounts.length,
+      });
+
       await supabaseAdminUpsert(
         "google_ads_accounts?on_conflict=owner_id,customer_id",
         accounts
       );
+
+      console.log("[google-ads][customers] upsert ok");
     }
 
     return res.json({
@@ -2001,9 +2031,13 @@ app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
       accounts,
     });
   } catch (e: any) {
-    console.error("[google-ads][customers] error:", e);
+    console.error("[google-ads][customers] error full:", e);
+    console.error("[google-ads][customers] error message:", e?.message);
+    console.error("[google-ads][customers] error stack:", e?.stack);
+
     return res.status(500).json({
       error: e?.message || "Google Ads customers error",
+      stack: process.env.NODE_ENV !== "production" ? e?.stack : undefined,
     });
   }
 });
