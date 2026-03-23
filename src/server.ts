@@ -1790,9 +1790,11 @@ function buildGoogleAdsSegmentRows(params: {
       conversion_value: googleAdsNumber(
         getGoogleAdsMetricValue(metrics, "conversionsValue", "conversions_value")
       ),
-      video_views: googleAdsNumber(getGoogleAdsMetricValue(metrics, "videoViews", "video_views")),
+      video_views: googleAdsNumber(
+        getGoogleAdsMetricValue(metrics, "videoTrueviewViews", "video_trueview_views")
+      ),
       video_view_rate: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoViewRate", "video_view_rate")
+        getGoogleAdsMetricValue(metrics, "videoTrueviewViewRate", "video_trueview_view_rate")
       ),
 
       raw: r,
