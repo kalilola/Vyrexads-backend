@@ -1776,9 +1776,9 @@ function buildGoogleAdsSegmentRows(params: {
 
       date: googleAdsString(segments.date),
 
-      age_range: googleAdsString(segments.ageRange || segments.age_range),
-      gender: googleAdsString(segments.gender || segments.gender_type),
-      parental_status: googleAdsString(segments.parentalStatus || segments.parental_status),
+      age_range: null,
+      gender: null,
+      parental_status: null,
 
       country: googleAdsString(segments.geoTargetCountry || segments.geo_target_country),
       region: googleAdsString(segments.geoTargetRegion || segments.geo_target_region),
@@ -1888,9 +1888,6 @@ async function syncGoogleAdsSegments(params: {
       ad_group.id,
       ad_group_ad.ad.id,
       segments.date,
-      segments.age_range,
-      segments.gender,
-      segments.parental_status,
       segments.geo_target_country,
       segments.geo_target_region,
       segments.geo_target_city,
