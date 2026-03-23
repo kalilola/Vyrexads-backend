@@ -1834,8 +1834,8 @@ async function syncGoogleAdsMetrics(params: {
       metrics.conversions_value,
       metrics.cost_per_conversion,
       metrics.conversions_from_interactions_rate,
-      metrics.video_views,
-      metrics.video_view_rate,
+      metrics.video_trueview_views,
+      metrics.video_trueview_view_rate,
       metrics.video_quartile_p25_rate,
       metrics.video_quartile_p50_rate,
       metrics.video_quartile_p75_rate,
@@ -1898,8 +1898,8 @@ async function syncGoogleAdsSegments(params: {
       metrics.cost_micros,
       metrics.conversions,
       metrics.conversions_value,
-      metrics.video_views,
-      metrics.video_view_rate
+      metrics.video_trueview_views,
+      metrics.video_trueview_view_rate,
     FROM ad_group_ad
     WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
   `.trim();
