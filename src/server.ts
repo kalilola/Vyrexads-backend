@@ -1723,9 +1723,11 @@ function buildGoogleAdsMetricsRows(params: {
         getGoogleAdsMetricValue(metrics, "conversionsValue", "conversions_value")
       ),
 
-      video_views: googleAdsNumber(getGoogleAdsMetricValue(metrics, "videoViews", "video_views")),
+      video_views: googleAdsNumber(
+        getGoogleAdsMetricValue(metrics, "videoTrueviewViews", "video_trueview_views")
+      ),
       video_view_rate: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoViewRate", "video_view_rate")
+        getGoogleAdsMetricValue(metrics, "videoTrueviewViewRate", "video_trueview_view_rate")
       ),
       video_quartile_25_rate: googleAdsNumber(
         getGoogleAdsMetricValue(metrics, "videoQuartileP25Rate", "video_quartile_p25_rate")
@@ -1899,7 +1901,7 @@ async function syncGoogleAdsSegments(params: {
       metrics.conversions,
       metrics.conversions_value,
       metrics.video_trueview_views,
-      metrics.video_trueview_view_rate,
+      metrics.video_trueview_view_rate
     FROM ad_group_ad
     WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
   `.trim();
