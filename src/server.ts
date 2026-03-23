@@ -1879,53 +1879,12 @@ async function syncGoogleAdsSegments(params: {
   date_to: string;
   login_customer_id?: string;
 }) {
-  let token = await getGoogleAdsToken(params.owner_id);
-  token = await refreshGoogleAccessTokenIfNeeded(params.owner_id, token);
-
-  const query = `
-    SELECT
-      campaign.id,
-      ad_group.id,
-      ad_group_ad.ad.id,
-      segments.date,
-      segments.geo_target_country,
-      segments.geo_target_region,
-      segments.geo_target_city,
-      metrics.impressions,
-      metrics.clicks,
-      metrics.ctr,
-      metrics.cost_micros,
-      metrics.conversions,
-      metrics.conversions_value,
-      metrics.video_trueview_views,
-      metrics.video_trueview_view_rate
-    FROM ad_group_ad
-    WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
-  `.trim();
-
-  const sourceRows = await googleAdsSearchStream({
-    access_token: String(token.access_token),
-    customer_id: params.customer_id,
-    query,
-    login_customer_id: params.login_customer_id,
-  });
-
-  const rows = buildGoogleAdsSegmentRows({
-    owner_id: params.owner_id,
-    customer_id: params.customer_id,
-    sourceRows,
-  });
-
-  if (rows.length > 0) {
-    await supabaseAdminUpsert(
-      "ads_metrics_segments?on_conflict=owner_id,provider,customer_id,campaign_id,ad_group_id,ad_id,date,age_range,gender,parental_status,country,region,city",
-      rows
-    );
-  }
-
   return {
     ok: true,
-    total_rows: rows.length,
+    total_rows: 0,
+    skipped: true,
+    reason:
+      "Google Ads geo/audience segments are incompatible with FROM ad_group_ad in this query. Segment sync disabled for now.",
   };
 }
 
