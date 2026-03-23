@@ -1975,41 +1975,49 @@ app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
 
     const accounts: GoogleAdsCustomerRow[] = [];
 
+const skipped_accounts: Array<{ customer_id: string; error: string }> = [];
+
     for (const cid of customerIds) {
-      console.log("[google-ads][customers] reading customer", { cid });
+      try {
+        const rows = await googleAdsSearch({
+          access_token: String(token.access_token),
+          customer_id: cid,
+          login_customer_id: login_customer_id || undefined,
+          query: `
+            SELECT
+              customer.id,
+              customer.descriptive_name,
+              customer.currency_code,
+              customer.time_zone,
+              customer.manager
+            FROM customer
+            LIMIT 1
+          `.trim(),
+        });
 
-      const rows = await googleAdsSearch({
-        access_token: String(token.access_token),
-        customer_id: cid,
-        login_customer_id: login_customer_id || undefined,
-        query: `
-          SELECT
-            customer.id,
-            customer.descriptive_name,
-            customer.currency_code,
-            customer.time_zone,
-            customer.manager
-          FROM customer
-          LIMIT 1
-        `.trim(),
-      });
+        const row = rows[0] || {};
+        const c = row?.customer || {};
 
-      const row = rows[0] || {};
-      const c = row?.customer || {};
+        accounts.push({
+          owner_id,
+          customer_id: String(c.id || cid),
+          resource_name: `customers/${String(c.id || cid)}`,
+          descriptive_name: c.descriptiveName ?? c.descriptive_name ?? null,
+          currency_code: c.currencyCode ?? c.currency_code ?? null,
+          time_zone: c.timeZone ?? c.time_zone ?? null,
+          is_manager: googleAdsBool(c.manager),
+        });
+      } catch (e: any) {
+        console.warn("[google-ads][customers] skipped account", {
+          customer_id: cid,
+          error: e?.message || "Unknown error",
+        });
 
-      const accountRow = {
-        owner_id,
-        customer_id: String(c.id || cid),
-        resource_name: `customers/${String(c.id || cid)}`,
-        descriptive_name: c.descriptiveName ?? c.descriptive_name ?? null,
-        currency_code: c.currencyCode ?? c.currency_code ?? null,
-        time_zone: c.timeZone ?? c.time_zone ?? null,
-        is_manager: googleAdsBool(c.manager),
-      };
-
-      console.log("[google-ads][customers] customer row built", accountRow);
-
-      accounts.push(accountRow);
+        skipped_accounts.push({
+          customer_id: cid,
+          error: e?.message || "Unknown error",
+        });
+      }
     }
 
     if (accounts.length > 0) {
@@ -2029,6 +2037,7 @@ app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
       ok: true,
       count: accounts.length,
       accounts,
+      skipped_accounts,
     });
   } catch (e: any) {
     console.error("[google-ads][customers] error full:", e);
