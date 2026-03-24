@@ -2043,8 +2043,7 @@ async function syncGoogleAdsMetrics(params: {
       ad_group_ad.ad.type,
       ad_group_ad.ad.final_urls,
       ad_group_ad.ad.display_url,
-      ad_group_ad.ad.resource_name
-
+      ad_group_ad.ad.resource_name,
       segments.date,
 
       metrics.impressions,
