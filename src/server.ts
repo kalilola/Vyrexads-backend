@@ -1987,12 +1987,106 @@ async function syncGoogleAdsSegments(params: {
   date_to: string;
   login_customer_id?: string;
 }) {
+  let token = await getGoogleAdsToken(params.owner_id);
+  token = await refreshGoogleAccessTokenIfNeeded(params.owner_id, token);
+
+  // =========================
+  // 1) Audience segments
+  // =========================
+  const audienceQuery = `
+    SELECT
+      campaign.id,
+      segments.date,
+      segments.age_range,
+      segments.gender_type,
+      segments.parental_status,
+
+      metrics.impressions,
+      metrics.clicks,
+      metrics.ctr,
+      metrics.cost_micros,
+      metrics.conversions,
+      metrics.conversions_value,
+      metrics.video_trueview_views,
+      metrics.video_trueview_view_rate
+
+    FROM campaign
+    WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
+      AND campaign.status != 'REMOVED'
+  `.trim();
+
+  const audienceSourceRows = await googleAdsSearchStream({
+    access_token: String(token.access_token),
+    customer_id: params.customer_id,
+    query: audienceQuery,
+    login_customer_id: params.login_customer_id,
+  });
+
+  const audienceRows = buildGoogleAdsSegmentRows({
+    owner_id: params.owner_id,
+    customer_id: params.customer_id,
+    sourceRows: audienceSourceRows,
+    segmentKind: "audience",
+  });
+
+  if (audienceRows.length > 0) {
+    await supabaseAdminUpsert(
+      "ads_metrics_segments?on_conflict=owner_id,provider,customer_id,campaign_id,ad_group_id,ad_id,date,age_range,gender,parental_status,country,region,city",
+      audienceRows
+    );
+  }
+
+  // =========================
+  // 2) Geo segments
+  // =========================
+  const geoQuery = `
+    SELECT
+      campaign.id,
+      segments.date,
+      segments.geo_target_country,
+      segments.geo_target_region,
+      segments.geo_target_city,
+
+      metrics.impressions,
+      metrics.clicks,
+      metrics.ctr,
+      metrics.cost_micros,
+      metrics.conversions,
+      metrics.conversions_value,
+      metrics.video_trueview_views,
+      metrics.video_trueview_view_rate
+
+    FROM campaign
+    WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
+      AND campaign.status != 'REMOVED'
+  `.trim();
+
+  const geoSourceRows = await googleAdsSearchStream({
+    access_token: String(token.access_token),
+    customer_id: params.customer_id,
+    query: geoQuery,
+    login_customer_id: params.login_customer_id,
+  });
+
+  const geoRows = buildGoogleAdsSegmentRows({
+    owner_id: params.owner_id,
+    customer_id: params.customer_id,
+    sourceRows: geoSourceRows,
+    segmentKind: "geo",
+  });
+
+  if (geoRows.length > 0) {
+    await supabaseAdminUpsert(
+      "ads_metrics_segments?on_conflict=owner_id,provider,customer_id,campaign_id,ad_group_id,ad_id,date,age_range,gender,parental_status,country,region,city",
+      geoRows
+    );
+  }
+
   return {
     ok: true,
-    total_rows: 0,
-    skipped: true,
-    reason:
-      "Google Ads geo/audience segments are incompatible with FROM ad_group_ad in this query. Segment sync disabled for now.",
+    audience_rows: audienceRows.length,
+    geo_rows: geoRows.length,
+    total_rows: audienceRows.length + geoRows.length,
   };
 }
 
