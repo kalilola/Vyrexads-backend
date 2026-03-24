@@ -1837,13 +1837,16 @@ function buildGoogleAdsSegmentRows(params: {
   owner_id: string;
   customer_id: string;
   sourceRows: any[];
+  kind: "age_range" | "gender";
 }) {
   const rows: any[] = [];
 
   for (const r of params.sourceRows) {
     const campaign = r?.campaign || {};
-    const segments = r?.segments || {};
     const metrics = r?.metrics || {};
+    const segments = r?.segments || {};
+    const ageRangeView = r?.ageRangeView || r?.age_range_view || {};
+    const genderView = r?.genderView || r?.gender_view || {};
 
     rows.push({
       owner_id: params.owner_id,
@@ -1851,20 +1854,28 @@ function buildGoogleAdsSegmentRows(params: {
       customer_id: String(params.customer_id),
 
       campaign_id: googleAdsString(campaign.id),
-      ad_group_id: null,
-      ad_id: null,
+
+      // ⚠️ on met des chaînes vides au lieu de null
+      // pour que le on_conflict fonctionne vraiment
+      ad_group_id: "",
+      ad_id: "",
 
       date: googleAdsString(segments.date),
 
-      age_range: googleAdsString(segments.ageRange || segments.age_range),
-      gender: googleAdsString(segments.genderType || segments.gender_type),
-      parental_status: googleAdsString(
-        segments.parentalStatus || segments.parental_status
-      ),
+      age_range:
+        params.kind === "age_range"
+          ? googleAdsString(ageRangeView.resourceName || ageRangeView.resource_name || "AGE_RANGE")
+          : "",
 
-      country: null,
-      region: null,
-      city: null,
+      gender:
+        params.kind === "gender"
+          ? googleAdsString(genderView.resourceName || genderView.resource_name || "GENDER")
+          : "",
+
+      parental_status: "",
+      country: "",
+      region: "",
+      city: "",
 
       impressions: googleAdsNumber(
         getGoogleAdsMetricValue(metrics, "impressions", "impressions")
@@ -1893,18 +1904,14 @@ function buildGoogleAdsSegmentRows(params: {
 
       raw: {
         ...r,
-        segment_kind: "audience_basic",
+        segment_kind: params.kind,
       },
 
       updated_at: new Date().toISOString(),
     });
   }
 
-  return rows.filter(
-    (row) =>
-      row.date &&
-      (row.age_range !== null || row.gender !== null || row.parental_status !== null)
-  );
+  return rows.filter((row) => row.date);
 }
 
 async function syncGoogleAdsSegments(params: {
@@ -1917,14 +1924,14 @@ async function syncGoogleAdsSegments(params: {
   let token = await getGoogleAdsToken(params.owner_id);
   token = await refreshGoogleAccessTokenIfNeeded(params.owner_id, token);
 
-  const audienceQuery = `
+  // =========================
+  // 1) Age range
+  // =========================
+  const ageRangeQuery = `
     SELECT
       campaign.id,
+      age_range_view.resource_name,
       segments.date,
-      segments.age_range,
-      segments.gender_type,
-      segments.parental_status,
-
       metrics.impressions,
       metrics.clicks,
       metrics.ctr,
@@ -1933,38 +1940,79 @@ async function syncGoogleAdsSegments(params: {
       metrics.conversions_value,
       metrics.video_trueview_views,
       metrics.video_trueview_view_rate
-
-    FROM campaign
+    FROM age_range_view
     WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
-      AND campaign.status != 'REMOVED'
   `.trim();
 
-  const sourceRows = await googleAdsSearchStream({
+  const ageRangeSourceRows = await googleAdsSearchStream({
     access_token: String(token.access_token),
     customer_id: params.customer_id,
-    query: audienceQuery,
+    query: ageRangeQuery,
     login_customer_id: params.login_customer_id,
   });
 
-  const rows = buildGoogleAdsSegmentRows({
+  const ageRangeRows = buildGoogleAdsSegmentRows({
     owner_id: params.owner_id,
     customer_id: params.customer_id,
-    sourceRows,
+    sourceRows: ageRangeSourceRows,
+    kind: "age_range",
   });
 
-  if (rows.length > 0) {
+  if (ageRangeRows.length > 0) {
     await supabaseAdminUpsert(
       "ads_metrics_segments?on_conflict=owner_id,provider,customer_id,campaign_id,ad_group_id,ad_id,date,age_range,gender,parental_status,country,region,city",
-      rows
+      ageRangeRows
+    );
+  }
+
+  // =========================
+  // 2) Gender
+  // =========================
+  const genderQuery = `
+    SELECT
+      campaign.id,
+      gender_view.resource_name,
+      segments.date,
+      metrics.impressions,
+      metrics.clicks,
+      metrics.ctr,
+      metrics.cost_micros,
+      metrics.conversions,
+      metrics.conversions_value,
+      metrics.video_trueview_views,
+      metrics.video_trueview_view_rate
+    FROM gender_view
+    WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
+  `.trim();
+
+  const genderSourceRows = await googleAdsSearchStream({
+    access_token: String(token.access_token),
+    customer_id: params.customer_id,
+    query: genderQuery,
+    login_customer_id: params.login_customer_id,
+  });
+
+  const genderRows = buildGoogleAdsSegmentRows({
+    owner_id: params.owner_id,
+    customer_id: params.customer_id,
+    sourceRows: genderSourceRows,
+    kind: "gender",
+  });
+
+  if (genderRows.length > 0) {
+    await supabaseAdminUpsert(
+      "ads_metrics_segments?on_conflict=owner_id,provider,customer_id,campaign_id,ad_group_id,ad_id,date,age_range,gender,parental_status,country,region,city",
+      genderRows
     );
   }
 
   return {
     ok: true,
-    total_rows: rows.length,
+    age_range_rows: ageRangeRows.length,
+    gender_rows: genderRows.length,
+    total_rows: ageRangeRows.length + genderRows.length,
   };
 }
-
 
 
 async function syncGoogleAdsMetrics(params: {
