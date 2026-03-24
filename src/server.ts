@@ -1837,15 +1837,11 @@ function buildGoogleAdsSegmentRows(params: {
   owner_id: string;
   customer_id: string;
   sourceRows: any[];
-  segmentKind: "audience" | "geo";
 }) {
   const rows: any[] = [];
 
   for (const r of params.sourceRows) {
     const campaign = r?.campaign || {};
-    const adGroup = r?.adGroup || r?.ad_group || {};
-    const adGroupAd = r?.adGroupAd || r?.ad_group_ad || {};
-    const ad = adGroupAd?.ad || {};
     const segments = r?.segments || {};
     const metrics = r?.metrics || {};
 
@@ -1855,8 +1851,8 @@ function buildGoogleAdsSegmentRows(params: {
       customer_id: String(params.customer_id),
 
       campaign_id: googleAdsString(campaign.id),
-      ad_group_id: googleAdsString(adGroup.id),
-      ad_id: googleAdsString(ad.id),
+      ad_group_id: null,
+      ad_id: null,
 
       date: googleAdsString(segments.date),
 
@@ -1866,15 +1862,25 @@ function buildGoogleAdsSegmentRows(params: {
         segments.parentalStatus || segments.parental_status
       ),
 
-      country: googleAdsString(segments.geoTargetCountry || segments.geo_target_country),
-      region: googleAdsString(segments.geoTargetRegion || segments.geo_target_region),
-      city: googleAdsString(segments.geoTargetCity || segments.geo_target_city),
+      country: null,
+      region: null,
+      city: null,
 
-      impressions: googleAdsNumber(getGoogleAdsMetricValue(metrics, "impressions", "impressions")),
-      clicks: googleAdsNumber(getGoogleAdsMetricValue(metrics, "clicks", "clicks")),
-      ctr: googleAdsNumber(getGoogleAdsMetricValue(metrics, "ctr", "ctr")),
-      cost: googleAdsMoneyToDecimal(getGoogleAdsMetricValue(metrics, "costMicros", "cost_micros")),
-      conversions: googleAdsNumber(getGoogleAdsMetricValue(metrics, "conversions", "conversions")),
+      impressions: googleAdsNumber(
+        getGoogleAdsMetricValue(metrics, "impressions", "impressions")
+      ),
+      clicks: googleAdsNumber(
+        getGoogleAdsMetricValue(metrics, "clicks", "clicks")
+      ),
+      ctr: googleAdsNumber(
+        getGoogleAdsMetricValue(metrics, "ctr", "ctr")
+      ),
+      cost: googleAdsMoneyToDecimal(
+        getGoogleAdsMetricValue(metrics, "costMicros", "cost_micros")
+      ),
+      conversions: googleAdsNumber(
+        getGoogleAdsMetricValue(metrics, "conversions", "conversions")
+      ),
       conversion_value: googleAdsNumber(
         getGoogleAdsMetricValue(metrics, "conversionsValue", "conversions_value")
       ),
@@ -1887,14 +1893,76 @@ function buildGoogleAdsSegmentRows(params: {
 
       raw: {
         ...r,
-        segment_kind: params.segmentKind,
+        segment_kind: "audience_basic",
       },
 
       updated_at: new Date().toISOString(),
     });
   }
 
-  return rows.filter((row) => row.date);
+  return rows.filter(
+    (row) =>
+      row.date &&
+      (row.age_range !== null || row.gender !== null || row.parental_status !== null)
+  );
+}
+
+async function syncGoogleAdsSegments(params: {
+  owner_id: string;
+  customer_id: string;
+  date_from: string;
+  date_to: string;
+  login_customer_id?: string;
+}) {
+  let token = await getGoogleAdsToken(params.owner_id);
+  token = await refreshGoogleAccessTokenIfNeeded(params.owner_id, token);
+
+  const audienceQuery = `
+    SELECT
+      campaign.id,
+      segments.date,
+      segments.age_range,
+      segments.gender_type,
+      segments.parental_status,
+
+      metrics.impressions,
+      metrics.clicks,
+      metrics.ctr,
+      metrics.cost_micros,
+      metrics.conversions,
+      metrics.conversions_value,
+      metrics.video_trueview_views,
+      metrics.video_trueview_view_rate
+
+    FROM campaign
+    WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
+      AND campaign.status != 'REMOVED'
+  `.trim();
+
+  const sourceRows = await googleAdsSearchStream({
+    access_token: String(token.access_token),
+    customer_id: params.customer_id,
+    query: audienceQuery,
+    login_customer_id: params.login_customer_id,
+  });
+
+  const rows = buildGoogleAdsSegmentRows({
+    owner_id: params.owner_id,
+    customer_id: params.customer_id,
+    sourceRows,
+  });
+
+  if (rows.length > 0) {
+    await supabaseAdminUpsert(
+      "ads_metrics_segments?on_conflict=owner_id,provider,customer_id,campaign_id,ad_group_id,ad_id,date,age_range,gender,parental_status,country,region,city",
+      rows
+    );
+  }
+
+  return {
+    ok: true,
+    total_rows: rows.length,
+  };
 }
 
 
@@ -1980,115 +2048,7 @@ async function syncGoogleAdsMetrics(params: {
   };
 }
 
-async function syncGoogleAdsSegments(params: {
-  owner_id: string;
-  customer_id: string;
-  date_from: string;
-  date_to: string;
-  login_customer_id?: string;
-}) {
-  let token = await getGoogleAdsToken(params.owner_id);
-  token = await refreshGoogleAccessTokenIfNeeded(params.owner_id, token);
 
-  // =========================
-  // 1) Audience segments
-  // =========================
-  const audienceQuery = `
-    SELECT
-      campaign.id,
-      segments.date,
-      segments.age_range,
-      segments.gender_type,
-      segments.parental_status,
-
-      metrics.impressions,
-      metrics.clicks,
-      metrics.ctr,
-      metrics.cost_micros,
-      metrics.conversions,
-      metrics.conversions_value,
-      metrics.video_trueview_views,
-      metrics.video_trueview_view_rate
-
-    FROM campaign
-    WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
-      AND campaign.status != 'REMOVED'
-  `.trim();
-
-  const audienceSourceRows = await googleAdsSearchStream({
-    access_token: String(token.access_token),
-    customer_id: params.customer_id,
-    query: audienceQuery,
-    login_customer_id: params.login_customer_id,
-  });
-
-  const audienceRows = buildGoogleAdsSegmentRows({
-    owner_id: params.owner_id,
-    customer_id: params.customer_id,
-    sourceRows: audienceSourceRows,
-    segmentKind: "audience",
-  });
-
-  if (audienceRows.length > 0) {
-    await supabaseAdminUpsert(
-      "ads_metrics_segments?on_conflict=owner_id,provider,customer_id,campaign_id,ad_group_id,ad_id,date,age_range,gender,parental_status,country,region,city",
-      audienceRows
-    );
-  }
-
-  // =========================
-  // 2) Geo segments
-  // =========================
-  const geoQuery = `
-    SELECT
-      campaign.id,
-      segments.date,
-      segments.geo_target_country,
-      segments.geo_target_region,
-      segments.geo_target_city,
-
-      metrics.impressions,
-      metrics.clicks,
-      metrics.ctr,
-      metrics.cost_micros,
-      metrics.conversions,
-      metrics.conversions_value,
-      metrics.video_trueview_views,
-      metrics.video_trueview_view_rate
-
-    FROM campaign
-    WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
-      AND campaign.status != 'REMOVED'
-  `.trim();
-
-  const geoSourceRows = await googleAdsSearchStream({
-    access_token: String(token.access_token),
-    customer_id: params.customer_id,
-    query: geoQuery,
-    login_customer_id: params.login_customer_id,
-  });
-
-  const geoRows = buildGoogleAdsSegmentRows({
-    owner_id: params.owner_id,
-    customer_id: params.customer_id,
-    sourceRows: geoSourceRows,
-    segmentKind: "geo",
-  });
-
-  if (geoRows.length > 0) {
-    await supabaseAdminUpsert(
-      "ads_metrics_segments?on_conflict=owner_id,provider,customer_id,campaign_id,ad_group_id,ad_id,date,age_range,gender,parental_status,country,region,city",
-      geoRows
-    );
-  }
-
-  return {
-    ok: true,
-    audience_rows: audienceRows.length,
-    geo_rows: geoRows.length,
-    total_rows: audienceRows.length + geoRows.length,
-  };
-}
 
 // GET: list accessible customers + upsert google_ads_accounts
 app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
