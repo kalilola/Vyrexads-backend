@@ -1684,6 +1684,8 @@ function buildGoogleAdsMetricsRows(params: {
     const segments = r?.segments || {};
     const metrics = r?.metrics || {};
 
+    const campaignMeta = classifyGoogleAdsCampaign(campaign);
+
     rows.push({
       owner_id: params.owner_id,
       provider: "google_ads",
@@ -1697,6 +1699,14 @@ function buildGoogleAdsMetricsRows(params: {
 
       ad_id: googleAdsString(ad.id),
       ad_name: googleAdsString(ad.name),
+
+      // ✅ différenciation pro des types de campagne
+      campaign_type: campaignMeta.channelType,
+      campaign_sub_type: campaignMeta.channelSubType,
+      campaign_status: campaignMeta.status,
+      campaign_serving_status: campaignMeta.servingStatus,
+      is_video_campaign: campaignMeta.isVideoCampaign,
+      is_performance_max: campaignMeta.isPerformanceMax,
 
       date: googleAdsString(segments.date),
 
@@ -1729,6 +1739,23 @@ function buildGoogleAdsMetricsRows(params: {
       video_view_rate: googleAdsNumber(
         getGoogleAdsMetricValue(metrics, "videoTrueviewViewRate", "video_trueview_view_rate")
       ),
+
+      // ✅ watch time
+      average_watch_time_millis: googleAdsNumber(
+        getGoogleAdsMetricValue(
+          metrics,
+          "averageVideoWatchTimeDurationMillis",
+          "average_video_watch_time_duration_millis"
+        )
+      ),
+      watch_time_millis: googleAdsNumber(
+        getGoogleAdsMetricValue(
+          metrics,
+          "videoWatchTimeDurationMillis",
+          "video_watch_time_duration_millis"
+        )
+      ),
+
       video_quartile_25_rate: googleAdsNumber(
         getGoogleAdsMetricValue(metrics, "videoQuartileP25Rate", "video_quartile_p25_rate")
       ),
@@ -1742,7 +1769,11 @@ function buildGoogleAdsMetricsRows(params: {
         getGoogleAdsMetricValue(metrics, "videoQuartileP100Rate", "video_quartile_p100_rate")
       ),
 
-      raw: r,
+      raw: {
+        ...r,
+        campaign_kind: campaignMeta.campaignKind,
+      },
+
       updated_at: new Date().toISOString(),
     });
   }
@@ -1750,10 +1781,63 @@ function buildGoogleAdsMetricsRows(params: {
   return rows.filter((row) => row.date);
 }
 
+
+function getGoogleAdsCampaignValue(campaign: any, camelKey: string, snakeKey?: string) {
+  if (!campaign || typeof campaign !== "object") return null;
+  if (campaign[camelKey] !== undefined) return campaign[camelKey];
+  if (snakeKey && campaign[snakeKey] !== undefined) return campaign[snakeKey];
+  return null;
+}
+
+function classifyGoogleAdsCampaign(campaign: any) {
+  const channelType = googleAdsString(
+    getGoogleAdsCampaignValue(campaign, "advertisingChannelType", "advertising_channel_type")
+  );
+
+  const channelSubType = googleAdsString(
+    getGoogleAdsCampaignValue(campaign, "advertisingChannelSubType", "advertising_channel_sub_type")
+  );
+
+  const status = googleAdsString(
+    getGoogleAdsCampaignValue(campaign, "status", "status")
+  );
+
+  const servingStatus = googleAdsString(
+    getGoogleAdsCampaignValue(campaign, "servingStatus", "serving_status")
+  );
+
+  const isPerformanceMax = channelType === "PERFORMANCE_MAX";
+
+  const isVideoCampaign =
+    channelType === "VIDEO" ||
+    channelType === "DEMAND_GEN" ||
+    isPerformanceMax;
+
+  let campaignKind = "other";
+
+  if (isPerformanceMax) campaignKind = "performance_max";
+  else if (channelType === "VIDEO") campaignKind = "youtube_video";
+  else if (channelType === "DEMAND_GEN") campaignKind = "demand_gen";
+  else if (channelType === "SEARCH") campaignKind = "search";
+  else if (channelType === "DISPLAY") campaignKind = "display";
+  else if (channelType === "SHOPPING") campaignKind = "shopping";
+
+  return {
+    channelType,
+    channelSubType,
+    status,
+    servingStatus,
+    isPerformanceMax,
+    isVideoCampaign,
+    campaignKind,
+  };
+}
+
 function buildGoogleAdsSegmentRows(params: {
   owner_id: string;
   customer_id: string;
   sourceRows: any[];
+  segmentKind: "audience" | "geo";
 }) {
   const rows: any[] = [];
 
@@ -1776,9 +1860,11 @@ function buildGoogleAdsSegmentRows(params: {
 
       date: googleAdsString(segments.date),
 
-      age_range: null,
-      gender: null,
-      parental_status: null,
+      age_range: googleAdsString(segments.ageRange || segments.age_range),
+      gender: googleAdsString(segments.genderType || segments.gender_type),
+      parental_status: googleAdsString(
+        segments.parentalStatus || segments.parental_status
+      ),
 
       country: googleAdsString(segments.geoTargetCountry || segments.geo_target_country),
       region: googleAdsString(segments.geoTargetRegion || segments.geo_target_region),
@@ -1799,13 +1885,19 @@ function buildGoogleAdsSegmentRows(params: {
         getGoogleAdsMetricValue(metrics, "videoTrueviewViewRate", "video_trueview_view_rate")
       ),
 
-      raw: r,
+      raw: {
+        ...r,
+        segment_kind: params.segmentKind,
+      },
+
       updated_at: new Date().toISOString(),
     });
   }
 
   return rows.filter((row) => row.date);
 }
+
+
 
 async function syncGoogleAdsMetrics(params: {
   owner_id: string;
@@ -1821,29 +1913,45 @@ async function syncGoogleAdsMetrics(params: {
     SELECT
       campaign.id,
       campaign.name,
+      campaign.status,
+      campaign.serving_status,
+      campaign.advertising_channel_type,
+      campaign.advertising_channel_sub_type,
+
       ad_group.id,
       ad_group.name,
+
       ad_group_ad.ad.id,
       ad_group_ad.ad.name,
+
       segments.date,
+
       metrics.impressions,
       metrics.clicks,
       metrics.ctr,
       metrics.cost_micros,
       metrics.average_cpc,
       metrics.average_cpm,
+
       metrics.conversions,
       metrics.conversions_value,
       metrics.cost_per_conversion,
       metrics.conversions_from_interactions_rate,
+
       metrics.video_trueview_views,
       metrics.video_trueview_view_rate,
+      metrics.average_video_watch_time_duration_millis,
+      metrics.video_watch_time_duration_millis,
       metrics.video_quartile_p25_rate,
       metrics.video_quartile_p50_rate,
       metrics.video_quartile_p75_rate,
       metrics.video_quartile_p100_rate
+
     FROM ad_group_ad
     WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
+      AND campaign.status != 'REMOVED'
+      AND ad_group.status != 'REMOVED'
+      AND ad_group_ad.status != 'REMOVED'
   `.trim();
 
   const sourceRows = await googleAdsSearchStream({
