@@ -2039,6 +2039,11 @@ async function syncGoogleAdsMetrics(params: {
 
       ad_group_ad.ad.id,
       ad_group_ad.ad.name,
+      ad_group_ad.status,
+      ad_group_ad.ad.type,
+      ad_group_ad.ad.final_urls,
+      ad_group_ad.ad.display_url,
+      ad_group_ad.ad.resource_name
 
       segments.date,
 
@@ -2077,6 +2082,19 @@ async function syncGoogleAdsMetrics(params: {
     login_customer_id: params.login_customer_id,
   });
 
+  const contentRows = buildGoogleAdsContentRows({
+    owner_id: params.owner_id,
+    customer_id: params.customer_id,
+    sourceRows,
+  });
+
+  if (contentRows.length > 0) {
+    await supabaseAdminUpsert(
+      "ads_contents?on_conflict=owner_id,provider,customer_id,ad_id",
+      contentRows
+    );
+  }
+
   const rows = buildGoogleAdsMetricsRows({
     owner_id: params.owner_id,
     customer_id: params.customer_id,
@@ -2096,6 +2114,57 @@ async function syncGoogleAdsMetrics(params: {
   };
 }
 
+function buildGoogleAdsContentRows(params: {
+  owner_id: string;
+  customer_id: string;
+  sourceRows: any[];
+}) {
+  const rows: any[] = [];
+
+  for (const r of params.sourceRows) {
+    const campaign = r?.campaign || {};
+    const adGroup = r?.adGroup || r?.ad_group || {};
+    const adGroupAd = r?.adGroupAd || r?.ad_group_ad || {};
+    const ad = adGroupAd?.ad || {};
+
+    const campaignMeta = classifyGoogleAdsCampaign(campaign);
+
+    rows.push({
+      owner_id: params.owner_id,
+      provider: "google_ads",
+      customer_id: String(params.customer_id),
+
+      campaign_id: googleAdsString(campaign.id),
+      campaign_name: googleAdsString(campaign.name),
+
+      ad_group_id: googleAdsString(adGroup.id),
+      ad_group_name: googleAdsString(adGroup.name),
+
+      ad_id: googleAdsString(ad.id),
+      ad_name: googleAdsString(ad.name),
+
+      ad_type: googleAdsString(ad.type),
+      campaign_type: campaignMeta.channelType,
+      campaign_sub_type: campaignMeta.channelSubType,
+
+      final_urls: Array.isArray(ad.finalUrls || ad.final_urls)
+        ? (ad.finalUrls || ad.final_urls)
+        : [],
+      display_url: googleAdsString(ad.displayUrl || ad.display_url),
+
+      youtube_video_id: null,
+      youtube_asset_resource_name: null,
+
+      status: googleAdsString(adGroupAd.status),
+      serving_status: campaignMeta.servingStatus,
+
+      raw: r,
+      updated_at: new Date().toISOString(),
+    });
+  }
+
+  return rows.filter((row) => row.ad_id);
+}
 
 
 // GET: list accessible customers + upsert google_ads_accounts
