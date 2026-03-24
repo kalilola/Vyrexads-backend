@@ -2080,6 +2080,9 @@ async function syncGoogleAdsMetrics(params: {
     query,
     login_customer_id: params.login_customer_id,
   });
+  
+  console.log("[google-ads][sync-metrics] sourceRows count =", sourceRows.length);
+  console.log("[google-ads][sync-metrics] first row =", sourceRows[0] ?? null);
 
   const contentRows = buildGoogleAdsContentRows({
     owner_id: params.owner_id,
