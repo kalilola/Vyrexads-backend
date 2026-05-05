@@ -1669,758 +1669,364 @@ async function googleAdsSearch(params: {
   return Array.isArray(out?.results) ? out.results : [];
 }
 
-function buildGoogleAdsMetricsRows(params: {
-  owner_id: string;
-  customer_id: string;
-  sourceRows: any[];
-}) {
-  const rows: any[] = [];
 
-  for (const r of params.sourceRows) {
-    const campaign = r?.campaign || {};
-    const adGroup = r?.adGroup || r?.ad_group || {};
-    const adGroupAd = r?.adGroupAd || r?.ad_group_ad || {};
-    const ad = adGroupAd?.ad || {};
-    const segments = r?.segments || {};
-    const metrics = r?.metrics || {};
 
-    const campaignMeta = classifyGoogleAdsCampaign(campaign);
 
-    rows.push({
-      owner_id: params.owner_id,
-      provider: "google_ads",
-      customer_id: String(params.customer_id),
+// ==============================
+// Google Ads reporting helpers
+// ==============================
 
-      campaign_id: googleAdsString(campaign.id),
-      campaign_name: googleAdsString(campaign.name),
-
-      ad_group_id: googleAdsString(adGroup.id),
-      ad_group_name: googleAdsString(adGroup.name),
-
-      ad_id: googleAdsString(ad.id),
-      ad_name: googleAdsString(ad.name),
-
-      // ✅ différenciation pro des types de campagne
-      campaign_type: campaignMeta.channelType,
-      campaign_sub_type: campaignMeta.channelSubType,
-      campaign_status: campaignMeta.status,
-      campaign_serving_status: campaignMeta.servingStatus,
-      is_video_campaign: campaignMeta.isVideoCampaign,
-      is_performance_max: campaignMeta.isPerformanceMax,
-
-      date: googleAdsString(segments.date),
-
-      impressions: googleAdsNumber(getGoogleAdsMetricValue(metrics, "impressions", "impressions")),
-      clicks: googleAdsNumber(getGoogleAdsMetricValue(metrics, "clicks", "clicks")),
-      ctr: googleAdsNumber(getGoogleAdsMetricValue(metrics, "ctr", "ctr")),
-
-      cost: googleAdsMoneyToDecimal(getGoogleAdsMetricValue(metrics, "costMicros", "cost_micros")),
-      cpc: googleAdsMoneyToDecimal(getGoogleAdsMetricValue(metrics, "averageCpc", "average_cpc")),
-      cpm: googleAdsMoneyToDecimal(getGoogleAdsMetricValue(metrics, "averageCpm", "average_cpm")),
-
-      conversions: googleAdsNumber(getGoogleAdsMetricValue(metrics, "conversions", "conversions")),
-      conversion_rate: googleAdsNumber(
-        getGoogleAdsMetricValue(
-          metrics,
-          "conversionsFromInteractionsRate",
-          "conversions_from_interactions_rate"
-        )
-      ),
-      cost_per_conversion: googleAdsMoneyToDecimal(
-        getGoogleAdsMetricValue(metrics, "costPerConversion", "cost_per_conversion")
-      ),
-      conversion_value: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "conversionsValue", "conversions_value")
-      ),
-
-      video_views: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoTrueviewViews", "video_trueview_views")
-      ),
-      video_view_rate: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoTrueviewViewRate", "video_trueview_view_rate")
-      ),
-
-      // ✅ watch time
-      average_watch_time_millis: googleAdsNumber(
-        getGoogleAdsMetricValue(
-          metrics,
-          "averageVideoWatchTimeDurationMillis",
-          "average_video_watch_time_duration_millis"
-        )
-      ),
-      watch_time_millis: googleAdsNumber(
-        getGoogleAdsMetricValue(
-          metrics,
-          "videoWatchTimeDurationMillis",
-          "video_watch_time_duration_millis"
-        )
-      ),
-
-      video_quartile_25_rate: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoQuartileP25Rate", "video_quartile_p25_rate")
-      ),
-      video_quartile_50_rate: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoQuartileP50Rate", "video_quartile_p50_rate")
-      ),
-      video_quartile_75_rate: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoQuartileP75Rate", "video_quartile_p75_rate")
-      ),
-      video_quartile_100_rate: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoQuartileP100Rate", "video_quartile_p100_rate")
-      ),
-
-      raw: {
-        ...r,
-        campaign_kind: campaignMeta.campaignKind,
-      },
-
-      updated_at: new Date().toISOString(),
-    });
+// Valide une date GAQL au format YYYY-MM-DD.
+function safeGaqlDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`Invalid date format: ${value}`);
   }
-
-  return rows.filter((row) => row.date);
+  return value;
 }
 
-
-function getGoogleAdsCampaignValue(campaign: any, camelKey: string, snakeKey?: string) {
-  if (!campaign || typeof campaign !== "object") return null;
-  if (campaign[camelKey] !== undefined) return campaign[camelKey];
-  if (snakeKey && campaign[snakeKey] !== undefined) return campaign[snakeKey];
-  return null;
-}
-
+// Classe une campagne Google Ads par type/statut.
 function classifyGoogleAdsCampaign(campaign: any) {
-  const channelType = googleAdsString(
-    getGoogleAdsCampaignValue(campaign, "advertisingChannelType", "advertising_channel_type")
-  );
+  const channelType =
+    campaign?.advertisingChannelType ||
+    campaign?.advertising_channel_type ||
+    null;
 
-  const channelSubType = googleAdsString(
-    getGoogleAdsCampaignValue(campaign, "advertisingChannelSubType", "advertising_channel_sub_type")
-  );
+  const channelSubType =
+    campaign?.advertisingChannelSubType ||
+    campaign?.advertising_channel_sub_type ||
+    null;
 
-  const status = googleAdsString(
-    getGoogleAdsCampaignValue(campaign, "status", "status")
-  );
-
-  const servingStatus = googleAdsString(
-    getGoogleAdsCampaignValue(campaign, "servingStatus", "serving_status")
-  );
-
-  const isPerformanceMax = channelType === "PERFORMANCE_MAX";
-
-  const isVideoCampaign =
-    channelType === "VIDEO" ||
-    channelType === "DEMAND_GEN" ||
-    isPerformanceMax;
-
-  let campaignKind = "other";
-
-  if (isPerformanceMax) campaignKind = "performance_max";
-  else if (channelType === "VIDEO") campaignKind = "youtube_video";
-  else if (channelType === "DEMAND_GEN") campaignKind = "demand_gen";
-  else if (channelType === "SEARCH") campaignKind = "search";
-  else if (channelType === "DISPLAY") campaignKind = "display";
-  else if (channelType === "SHOPPING") campaignKind = "shopping";
+  const status = campaign?.status || null;
+  const servingStatus =
+    campaign?.servingStatus ||
+    campaign?.serving_status ||
+    null;
 
   return {
     channelType,
     channelSubType,
     status,
     servingStatus,
-    isPerformanceMax,
-    isVideoCampaign,
-    campaignKind,
+    isVideoCampaign: channelType === "VIDEO",
+    isPerformanceMax: channelType === "PERFORMANCE_MAX",
   };
 }
 
-function buildGoogleAdsSegmentRows(params: {
+// Convertit les métriques Google Ads vers le format DB.
+function mapCommonGoogleAdsMetrics(metrics: any) {
+  return {
+    impressions: googleAdsNumber(getGoogleAdsMetricValue(metrics, "impressions")) || 0,
+    clicks: googleAdsNumber(getGoogleAdsMetricValue(metrics, "clicks")) || 0,
+    ctr: googleAdsNumber(getGoogleAdsMetricValue(metrics, "ctr")),
+    cost: googleAdsMoneyToDecimal(getGoogleAdsMetricValue(metrics, "costMicros", "cost_micros")),
+    average_cpc: googleAdsMoneyToDecimal(getGoogleAdsMetricValue(metrics, "averageCpc", "average_cpc")),
+    average_cpm: googleAdsMoneyToDecimal(getGoogleAdsMetricValue(metrics, "averageCpm", "average_cpm")),
+    conversions: googleAdsNumber(getGoogleAdsMetricValue(metrics, "conversions")),
+    conversion_rate: googleAdsNumber(
+      getGoogleAdsMetricValue(metrics, "conversionsFromInteractionsRate", "conversions_from_interactions_rate")
+    ),
+    cost_per_conversion: googleAdsMoneyToDecimal(
+      getGoogleAdsMetricValue(metrics, "costPerConversion", "cost_per_conversion")
+    ),
+    conversion_value: googleAdsNumber(getGoogleAdsMetricValue(metrics, "conversionsValue", "conversions_value")),
+    video_views: googleAdsNumber(getGoogleAdsMetricValue(metrics, "videoTrueviewViews", "video_trueview_views")),
+    video_view_rate: googleAdsNumber(getGoogleAdsMetricValue(metrics, "videoTrueviewViewRate", "video_trueview_view_rate")),
+    average_watch_time_millis: googleAdsNumber(
+      getGoogleAdsMetricValue(metrics, "averageVideoWatchTimeDurationMillis", "average_video_watch_time_duration_millis")
+    ),
+    watch_time_millis: googleAdsNumber(
+      getGoogleAdsMetricValue(metrics, "videoWatchTimeDurationMillis", "video_watch_time_duration_millis")
+    ),
+    video_quartile_25_rate: googleAdsNumber(getGoogleAdsMetricValue(metrics, "videoQuartileP25Rate", "video_quartile_p25_rate")),
+    video_quartile_50_rate: googleAdsNumber(getGoogleAdsMetricValue(metrics, "videoQuartileP50Rate", "video_quartile_p50_rate")),
+    video_quartile_75_rate: googleAdsNumber(getGoogleAdsMetricValue(metrics, "videoQuartileP75Rate", "video_quartile_p75_rate")),
+    video_quartile_100_rate: googleAdsNumber(getGoogleAdsMetricValue(metrics, "videoQuartileP100Rate", "video_quartile_p100_rate")),
+  };
+}
+
+// Construit les champs communs liés à la campagne.
+function baseGoogleAdsMeta(params: {
   owner_id: string;
   customer_id: string;
-  sourceRows: any[];
-  kind: "age_range" | "gender";
+  campaign: any;
 }) {
-  const rows: any[] = [];
+  const meta = classifyGoogleAdsCampaign(params.campaign);
 
-  for (const r of params.sourceRows) {
+  return {
+    owner_id: params.owner_id,
+    provider: "google_ads",
+    customer_id: String(params.customer_id),
+
+    campaign_id: googleAdsString(params.campaign?.id),
+    campaign_name: googleAdsString(params.campaign?.name),
+
+    campaign_type: meta.channelType,
+    campaign_sub_type: meta.channelSubType,
+    campaign_status: meta.status,
+    campaign_serving_status: meta.servingStatus,
+    is_video_campaign: meta.isVideoCampaign,
+    is_performance_max: meta.isPerformanceMax,
+  };
+}
+
+// Récupère un access token Google Ads frais.
+async function getFreshGoogleAdsAccessToken(owner_id: string) {
+  let token = await getGoogleAdsToken(owner_id);
+  token = await refreshGoogleAccessTokenIfNeeded(owner_id, token);
+  return String(token.access_token);
+}
+
+// ==============================
+// Google Ads structure listing
+// ==============================
+
+// Liste les campagnes du compte.
+async function listGoogleAdsCampaigns(params: {
+  owner_id: string;
+  customer_id: string;
+  login_customer_id?: string;
+}) {
+  const access_token = await getFreshGoogleAdsAccessToken(params.owner_id);
+
+  const rows = await googleAdsSearchStream({
+    access_token,
+    customer_id: params.customer_id,
+    login_customer_id: params.login_customer_id,
+    query: `
+      SELECT
+        campaign.id,
+        campaign.name,
+        campaign.status,
+        campaign.serving_status,
+        campaign.advertising_channel_type,
+        campaign.advertising_channel_sub_type
+      FROM campaign
+      WHERE campaign.status != 'REMOVED'
+      ORDER BY campaign.name
+    `.trim(),
+  });
+
+  return rows.map((r: any) => {
+    const c = r?.campaign || {};
+    const meta = classifyGoogleAdsCampaign(c);
+
+    return {
+      id: googleAdsString(c.id),
+      name: googleAdsString(c.name),
+      status: meta.status,
+      serving_status: meta.servingStatus,
+      type: meta.channelType,
+      sub_type: meta.channelSubType,
+      is_video_campaign: meta.isVideoCampaign,
+      is_performance_max: meta.isPerformanceMax,
+      raw: c,
+    };
+  });
+}
+
+// Liste les ad groups du compte.
+async function listGoogleAdsAdGroups(params: {
+  owner_id: string;
+  customer_id: string;
+  login_customer_id?: string;
+}) {
+  const access_token = await getFreshGoogleAdsAccessToken(params.owner_id);
+
+  const rows = await googleAdsSearchStream({
+    access_token,
+    customer_id: params.customer_id,
+    login_customer_id: params.login_customer_id,
+    query: `
+      SELECT
+        campaign.id,
+        campaign.name,
+        campaign.status,
+        campaign.serving_status,
+        campaign.advertising_channel_type,
+        campaign.advertising_channel_sub_type,
+        ad_group.id,
+        ad_group.name,
+        ad_group.status
+      FROM ad_group
+      WHERE campaign.status != 'REMOVED'
+        AND ad_group.status != 'REMOVED'
+      ORDER BY campaign.name, ad_group.name
+    `.trim(),
+  });
+
+  return rows.map((r: any) => {
     const campaign = r?.campaign || {};
-    const metrics = r?.metrics || {};
-    const segments = r?.segments || {};
-    const ageRangeView = r?.ageRangeView || r?.age_range_view || {};
-    const genderView = r?.genderView || r?.gender_view || {};
+    const adGroup = r?.adGroup || r?.ad_group || {};
+    const meta = classifyGoogleAdsCampaign(campaign);
 
-    rows.push({
-      owner_id: params.owner_id,
-      provider: "google_ads",
-      customer_id: String(params.customer_id),
-
+    return {
       campaign_id: googleAdsString(campaign.id),
-
-      // ⚠️ on met des chaînes vides au lieu de null
-      // pour que le on_conflict fonctionne vraiment
-      ad_group_id: "",
-      ad_id: "",
-
-      date: googleAdsString(segments.date),
-
-      age_range:
-        params.kind === "age_range"
-          ? googleAdsString(ageRangeView.resourceName || ageRangeView.resource_name || "AGE_RANGE")
-          : "",
-
-      gender:
-        params.kind === "gender"
-          ? googleAdsString(genderView.resourceName || genderView.resource_name || "GENDER")
-          : "",
-
-      parental_status: "",
-      country: "",
-      region: "",
-      city: "",
-
-      impressions: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "impressions", "impressions")
-      ),
-      clicks: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "clicks", "clicks")
-      ),
-      ctr: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "ctr", "ctr")
-      ),
-      cost: googleAdsMoneyToDecimal(
-        getGoogleAdsMetricValue(metrics, "costMicros", "cost_micros")
-      ),
-      conversions: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "conversions", "conversions")
-      ),
-      conversion_value: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "conversionsValue", "conversions_value")
-      ),
-      video_views: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoTrueviewViews", "video_trueview_views")
-      ),
-      video_view_rate: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoTrueviewViewRate", "video_trueview_view_rate")
-      ),
-
-      raw: {
-        ...r,
-        segment_kind: params.kind,
-      },
-
-      updated_at: new Date().toISOString(),
-    });
-  }
-
-  return rows.filter((row) => row.date);
+      campaign_name: googleAdsString(campaign.name),
+      campaign_type: meta.channelType,
+      campaign_sub_type: meta.channelSubType,
+      ad_group_id: googleAdsString(adGroup.id),
+      ad_group_name: googleAdsString(adGroup.name),
+      ad_group_status: googleAdsString(adGroup.status),
+      raw: r,
+    };
+  });
 }
 
-async function syncGoogleAdsSegments(params: {
+// Liste les ads du compte.
+async function listGoogleAdsAds(params: {
   owner_id: string;
   customer_id: string;
-  date_from: string;
-  date_to: string;
   login_customer_id?: string;
 }) {
-  let token = await getGoogleAdsToken(params.owner_id);
-  token = await refreshGoogleAccessTokenIfNeeded(params.owner_id, token);
+  const access_token = await getFreshGoogleAdsAccessToken(params.owner_id);
 
-  // =========================
-  // 1) Age range
-  // =========================
-  const ageRangeQuery = `
-    SELECT
-      campaign.id,
-      age_range_view.resource_name,
-      segments.date,
-      metrics.impressions,
-      metrics.clicks,
-      metrics.ctr,
-      metrics.cost_micros,
-      metrics.conversions,
-      metrics.conversions_value,
-      metrics.video_trueview_views,
-      metrics.video_trueview_view_rate
-    FROM age_range_view
-    WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
-  `.trim();
-
-  const ageRangeSourceRows = await googleAdsSearchStream({
-    access_token: String(token.access_token),
+  const rows = await googleAdsSearchStream({
+    access_token,
     customer_id: params.customer_id,
-    query: ageRangeQuery,
     login_customer_id: params.login_customer_id,
+    query: `
+      SELECT
+        campaign.id,
+        campaign.name,
+        campaign.status,
+        campaign.serving_status,
+        campaign.advertising_channel_type,
+        campaign.advertising_channel_sub_type,
+        ad_group.id,
+        ad_group.name,
+        ad_group.status,
+        ad_group_ad.status,
+        ad_group_ad.ad.id,
+        ad_group_ad.ad.name,
+        ad_group_ad.ad.type
+      FROM ad_group_ad
+      WHERE campaign.status != 'REMOVED'
+        AND ad_group.status != 'REMOVED'
+        AND ad_group_ad.status != 'REMOVED'
+      ORDER BY campaign.name, ad_group.name
+    `.trim(),
   });
 
-  const ageRangeRows = buildGoogleAdsSegmentRows({
-    owner_id: params.owner_id,
-    customer_id: params.customer_id,
-    sourceRows: ageRangeSourceRows,
-    kind: "age_range",
-  });
-
-  if (ageRangeRows.length > 0) {
-    await supabaseAdminUpsert(
-      "ads_metrics_segments?on_conflict=owner_id,provider,customer_id,campaign_id,ad_group_id,ad_id,date,age_range,gender,parental_status,country,region,city",
-      ageRangeRows
-    );
-  }
-
-  // =========================
-  // 2) Gender
-  // =========================
-  const genderQuery = `
-    SELECT
-      campaign.id,
-      gender_view.resource_name,
-      segments.date,
-      metrics.impressions,
-      metrics.clicks,
-      metrics.ctr,
-      metrics.cost_micros,
-      metrics.conversions,
-      metrics.conversions_value,
-      metrics.video_trueview_views,
-      metrics.video_trueview_view_rate
-    FROM gender_view
-    WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
-  `.trim();
-
-  const genderSourceRows = await googleAdsSearchStream({
-    access_token: String(token.access_token),
-    customer_id: params.customer_id,
-    query: genderQuery,
-    login_customer_id: params.login_customer_id,
-  });
-
-  const genderRows = buildGoogleAdsSegmentRows({
-    owner_id: params.owner_id,
-    customer_id: params.customer_id,
-    sourceRows: genderSourceRows,
-    kind: "gender",
-  });
-
-  if (genderRows.length > 0) {
-    await supabaseAdminUpsert(
-      "ads_metrics_segments?on_conflict=owner_id,provider,customer_id,campaign_id,ad_group_id,ad_id,date,age_range,gender,parental_status,country,region,city",
-      genderRows
-    );
-  }
-
-  return {
-    ok: true,
-    age_range_rows: ageRangeRows.length,
-    gender_rows: genderRows.length,
-    total_rows: ageRangeRows.length + genderRows.length,
-  };
-}
-
-
-
-
-
-
-async function syncGoogleAdsMetrics(params: {
-  owner_id: string;
-  customer_id: string;
-  date_from: string;
-  date_to: string;
-  login_customer_id?: string;
-}) {
-  const adGroupResult = await syncGoogleAdsAdGroupMetrics(params);
-  const campaignResult = await syncGoogleAdsCampaignMetrics(params);
-
-  return {
-    ok: true,
-    ad_group_metrics: adGroupResult,
-    campaign_metrics: campaignResult,
-    total_rows: (adGroupResult.total_rows || 0) + (campaignResult.total_rows || 0),
-  };
-}
-
-function buildGoogleAdsContentRows(params: {
-  owner_id: string;
-  customer_id: string;
-  sourceRows: any[];
-}) {
-  const rows: any[] = [];
-
-  for (const r of params.sourceRows) {
+  return rows.map((r: any) => {
     const campaign = r?.campaign || {};
     const adGroup = r?.adGroup || r?.ad_group || {};
     const adGroupAd = r?.adGroupAd || r?.ad_group_ad || {};
     const ad = adGroupAd?.ad || {};
+    const meta = classifyGoogleAdsCampaign(campaign);
 
-    const campaignMeta = classifyGoogleAdsCampaign(campaign);
-
-    rows.push({
-      owner_id: params.owner_id,
-      provider: "google_ads",
-      customer_id: String(params.customer_id),
-
+    return {
       campaign_id: googleAdsString(campaign.id),
       campaign_name: googleAdsString(campaign.name),
-
+      campaign_type: meta.channelType,
+      campaign_sub_type: meta.channelSubType,
       ad_group_id: googleAdsString(adGroup.id),
       ad_group_name: googleAdsString(adGroup.name),
-
       ad_id: googleAdsString(ad.id),
       ad_name: googleAdsString(ad.name),
-
       ad_type: googleAdsString(ad.type),
-      campaign_type: campaignMeta.channelType,
-      campaign_sub_type: campaignMeta.channelSubType,
-
-      final_urls: Array.isArray(ad.finalUrls || ad.final_urls)
-        ? (ad.finalUrls || ad.final_urls)
-        : [],
-      display_url: googleAdsString(ad.displayUrl || ad.display_url),
-
-      youtube_video_id: null,
-      youtube_asset_resource_name: null,
-
-      status: googleAdsString(adGroupAd.status),
-      serving_status: campaignMeta.servingStatus,
-
+      ad_status: googleAdsString(adGroupAd.status),
       raw: r,
-      updated_at: new Date().toISOString(),
-    });
-  }
-
-  return rows.filter((row) => row.ad_id);
+    };
+  });
 }
 
+// ==============================
+// Google Ads metrics row builders
+// ==============================
 
-// GET: list accessible customers + upsert google_ads_accounts
-app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
-  try {
-    const owner_id = String(req.query.owner_id || "");
-    const login_customer_id = String(req.query.login_customer_id || "");
-
-    if (!owner_id) {
-      return res.status(400).json({ error: "Missing owner_id" });
-    }
-
-    console.log("[google-ads][customers] START", {
-      owner_id,
-      login_customer_id: login_customer_id || null,
-    });
-
-    let token = await getGoogleAdsToken(owner_id);
-    console.log("[google-ads][customers] token loaded", {
-      has_access_token: Boolean(token?.access_token),
-      has_refresh_token: Boolean(token?.refresh_token),
-      expires_at: token?.expires_at || null,
-    });
-
-    token = await refreshGoogleAccessTokenIfNeeded(owner_id, token);
-    console.log("[google-ads][customers] token ready", {
-      expires_at: token?.expires_at || null,
-    });
-
-    const listUrl = `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers:listAccessibleCustomers`;
-    const listJson = await googleAdsFetch(String(token.access_token), listUrl, {
-      loginCustomerId: login_customer_id || undefined,
-      method: "GET",
-    });
-
-    const resourceNames: string[] = Array.isArray(listJson?.resourceNames)
-      ? listJson.resourceNames
-      : [];
-
-    console.log("[google-ads][customers] accessible resourceNames", resourceNames);
-
-    const customerIds = resourceNames
-      .map((r) => (typeof r === "string" ? r.split("/")[1] : null))
-      .filter(Boolean) as string[];
-
-    console.log("[google-ads][customers] customerIds", customerIds);
-
-    const accounts: GoogleAdsCustomerRow[] = [];
-
-const skipped_accounts: Array<{ customer_id: string; error: string }> = [];
-
-    for (const cid of customerIds) {
-      try {
-        const rows = await googleAdsSearch({
-          access_token: String(token.access_token),
-          customer_id: cid,
-          login_customer_id: login_customer_id || undefined,
-          query: `
-            SELECT
-              customer.id,
-              customer.descriptive_name,
-              customer.currency_code,
-              customer.time_zone,
-              customer.manager
-            FROM customer
-            LIMIT 1
-          `.trim(),
-        });
-
-        const row = rows[0] || {};
-        const c = row?.customer || {};
-
-        accounts.push({
-          owner_id,
-          customer_id: String(c.id || cid),
-          resource_name: `customers/${String(c.id || cid)}`,
-          descriptive_name: c.descriptiveName ?? c.descriptive_name ?? null,
-          currency_code: c.currencyCode ?? c.currency_code ?? null,
-          time_zone: c.timeZone ?? c.time_zone ?? null,
-          is_manager: googleAdsBool(c.manager),
-        });
-      } catch (e: any) {
-        console.warn("[google-ads][customers] skipped account", {
-          customer_id: cid,
-          error: e?.message || "Unknown error",
-        });
-
-        skipped_accounts.push({
-          customer_id: cid,
-          error: e?.message || "Unknown error",
-        });
-      }
-    }
-
-    if (accounts.length > 0) {
-      console.log("[google-ads][customers] upserting accounts", {
-        count: accounts.length,
-      });
-
-      await supabaseAdminUpsert(
-        "google_ads_accounts?on_conflict=owner_id,customer_id",
-        accounts
-      );
-
-      console.log("[google-ads][customers] upsert ok");
-    }
-
-    return res.json({
-      ok: true,
-      count: accounts.length,
-      accounts,
-      skipped_accounts,
-    });
-  } catch (e: any) {
-    console.error("[google-ads][customers] error full:", e);
-    console.error("[google-ads][customers] error message:", e?.message);
-    console.error("[google-ads][customers] error stack:", e?.stack);
-
-    return res.status(500).json({
-      error: e?.message || "Google Ads customers error",
-      stack: process.env.NODE_ENV !== "production" ? e?.stack : undefined,
-    });
-  }
-});
-
-
-
-
-function buildGoogleAdsAdGroupMetricRows(params: {
+// Prépare les lignes de métriques campaign pour Supabase.
+function buildCampaignMetricRows(params: {
   owner_id: string;
   customer_id: string;
   sourceRows: any[];
 }) {
-  const rows: any[] = [];
+  return params.sourceRows.map((r: any) => {
+    const campaign = r?.campaign || {};
+    const segments = r?.segments || {};
+    const metrics = r?.metrics || {};
 
-  for (const r of params.sourceRows) {
+    return {
+      ...baseGoogleAdsMeta({
+        owner_id: params.owner_id,
+        customer_id: params.customer_id,
+        campaign,
+      }),
+      date: googleAdsString(segments.date),
+      ...mapCommonGoogleAdsMetrics(metrics),
+      raw: r,
+      updated_at: new Date().toISOString(),
+    };
+  }).filter((row: any) => row.campaign_id && row.date);
+}
+
+// Prépare les lignes de métriques ad group pour Supabase.
+function buildAdGroupMetricRows(params: {
+  owner_id: string;
+  customer_id: string;
+  sourceRows: any[];
+}) {
+  return params.sourceRows.map((r: any) => {
     const campaign = r?.campaign || {};
     const adGroup = r?.adGroup || r?.ad_group || {};
     const segments = r?.segments || {};
     const metrics = r?.metrics || {};
 
-    const campaignMeta = classifyGoogleAdsCampaign(campaign);
-
-    rows.push({
-      owner_id: params.owner_id,
-      provider: "google_ads",
-      customer_id: String(params.customer_id),
-
-      campaign_id: googleAdsString(campaign.id),
-      campaign_name: googleAdsString(campaign.name),
-
+    return {
+      ...baseGoogleAdsMeta({
+        owner_id: params.owner_id,
+        customer_id: params.customer_id,
+        campaign,
+      }),
       ad_group_id: googleAdsString(adGroup.id),
       ad_group_name: googleAdsString(adGroup.name),
-
-      date: googleAdsString(segments.date),
-
-      impressions: googleAdsNumber(getGoogleAdsMetricValue(metrics, "impressions", "impressions")) ?? 0,
-      clicks: googleAdsNumber(getGoogleAdsMetricValue(metrics, "clicks", "clicks")) ?? 0,
-      ctr: googleAdsNumber(getGoogleAdsMetricValue(metrics, "ctr", "ctr")),
-      cost: googleAdsMoneyToDecimal(getGoogleAdsMetricValue(metrics, "costMicros", "cost_micros")),
-      conversions: googleAdsNumber(getGoogleAdsMetricValue(metrics, "conversions", "conversions")),
-      conversion_value: googleAdsNumber(getGoogleAdsMetricValue(metrics, "conversionsValue", "conversions_value")),
-
-      video_views: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoTrueviewViews", "video_trueview_views")
-      ),
-      video_view_rate: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoTrueviewViewRate", "video_trueview_view_rate")
-      ),
-
-      campaign_type: campaignMeta.channelType,
-      campaign_sub_type: campaignMeta.channelSubType,
-      campaign_status: campaignMeta.status,
-      campaign_serving_status: campaignMeta.servingStatus,
-      is_video_campaign: campaignMeta.isVideoCampaign,
-      is_performance_max: campaignMeta.isPerformanceMax,
-
       ad_group_status: googleAdsString(adGroup.status),
-
+      date: googleAdsString(segments.date),
+      ...mapCommonGoogleAdsMetrics(metrics),
       raw: r,
       updated_at: new Date().toISOString(),
-    });
-  }
-
-  return rows.filter((row) => row.date && row.ad_group_id);
+    };
+  }).filter((row: any) => row.campaign_id && row.ad_group_id && row.date);
 }
 
-function buildGoogleAdsCampaignMetricRows(params: {
+// Prépare les lignes de métriques ad pour Supabase.
+function buildAdMetricRows(params: {
   owner_id: string;
   customer_id: string;
   sourceRows: any[];
 }) {
-  const rows: any[] = [];
-
-  for (const r of params.sourceRows) {
+  return params.sourceRows.map((r: any) => {
     const campaign = r?.campaign || {};
+    const adGroup = r?.adGroup || r?.ad_group || {};
+    const adGroupAd = r?.adGroupAd || r?.ad_group_ad || {};
+    const ad = adGroupAd?.ad || {};
     const segments = r?.segments || {};
     const metrics = r?.metrics || {};
 
-    const campaignMeta = classifyGoogleAdsCampaign(campaign);
-
-    rows.push({
-      owner_id: params.owner_id,
-      provider: "google_ads",
-      customer_id: String(params.customer_id),
-
-      campaign_id: googleAdsString(campaign.id),
-      campaign_name: googleAdsString(campaign.name),
-
+    return {
+      ...baseGoogleAdsMeta({
+        owner_id: params.owner_id,
+        customer_id: params.customer_id,
+        campaign,
+      }),
+      ad_group_id: googleAdsString(adGroup.id),
+      ad_group_name: googleAdsString(adGroup.name),
+      ad_id: googleAdsString(ad.id),
+      ad_name: googleAdsString(ad.name),
+      ad_type: googleAdsString(ad.type),
+      ad_status: googleAdsString(adGroupAd.status),
       date: googleAdsString(segments.date),
-
-      impressions: googleAdsNumber(getGoogleAdsMetricValue(metrics, "impressions", "impressions")) ?? 0,
-      clicks: googleAdsNumber(getGoogleAdsMetricValue(metrics, "clicks", "clicks")) ?? 0,
-      ctr: googleAdsNumber(getGoogleAdsMetricValue(metrics, "ctr", "ctr")),
-      cost: googleAdsMoneyToDecimal(getGoogleAdsMetricValue(metrics, "costMicros", "cost_micros")),
-      conversions: googleAdsNumber(getGoogleAdsMetricValue(metrics, "conversions", "conversions")),
-      conversion_value: googleAdsNumber(getGoogleAdsMetricValue(metrics, "conversionsValue", "conversions_value")),
-
-      video_views: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoTrueviewViews", "video_trueview_views")
-      ),
-      video_view_rate: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoTrueviewViewRate", "video_trueview_view_rate")
-      ),
-
-      average_watch_time_millis: googleAdsNumber(
-        getGoogleAdsMetricValue(
-          metrics,
-          "averageVideoWatchTimeDurationMillis",
-          "average_video_watch_time_duration_millis"
-        )
-      ),
-      watch_time_millis: googleAdsNumber(
-        getGoogleAdsMetricValue(
-          metrics,
-          "videoWatchTimeDurationMillis",
-          "video_watch_time_duration_millis"
-        )
-      ),
-
-      video_quartile_25_rate: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoQuartileP25Rate", "video_quartile_p25_rate")
-      ),
-      video_quartile_50_rate: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoQuartileP50Rate", "video_quartile_p50_rate")
-      ),
-      video_quartile_75_rate: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoQuartileP75Rate", "video_quartile_p75_rate")
-      ),
-      video_quartile_100_rate: googleAdsNumber(
-        getGoogleAdsMetricValue(metrics, "videoQuartileP100Rate", "video_quartile_p100_rate")
-      ),
-
-      campaign_type: campaignMeta.channelType,
-      campaign_sub_type: campaignMeta.channelSubType,
-      campaign_status: campaignMeta.status,
-      campaign_serving_status: campaignMeta.servingStatus,
-      is_video_campaign: campaignMeta.isVideoCampaign,
-      is_performance_max: campaignMeta.isPerformanceMax,
-
+      ...mapCommonGoogleAdsMetrics(metrics),
       raw: r,
       updated_at: new Date().toISOString(),
-    });
-  }
-
-  return rows.filter((row) => row.date && row.campaign_id);
+    };
+  }).filter((row: any) => row.campaign_id && row.ad_group_id && row.ad_id && row.date);
 }
 
-async function syncGoogleAdsAdGroupMetrics(params: {
-  owner_id: string;
-  customer_id: string;
-  date_from: string;
-  date_to: string;
-  login_customer_id?: string;
-}) {
-  let token = await getGoogleAdsToken(params.owner_id);
-  token = await refreshGoogleAccessTokenIfNeeded(params.owner_id, token);
+// ==============================
+// Google Ads metrics sync
+// ==============================
 
-  const query = `
-    SELECT
-      campaign.id,
-      campaign.name,
-      campaign.status,
-      campaign.serving_status,
-      campaign.advertising_channel_type,
-      campaign.advertising_channel_sub_type,
-      ad_group.id,
-      ad_group.name,
-      ad_group.status,
-      segments.date,
-      metrics.impressions,
-      metrics.clicks,
-      metrics.ctr,
-      metrics.cost_micros,
-      metrics.conversions,
-      metrics.conversions_value,
-      metrics.video_trueview_views,
-      metrics.video_trueview_view_rate
-    FROM ad_group
-    WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
-      AND campaign.status != 'REMOVED'
-      AND ad_group.status != 'REMOVED'
-  `.trim();
-
-  const sourceRows = await googleAdsSearchStream({
-    access_token: String(token.access_token),
-    customer_id: params.customer_id,
-    query,
-    login_customer_id: params.login_customer_id,
-  });
-
-  console.log("[google-ads][sync-ad-groups] sourceRows count =", sourceRows.length);
-  console.log("[google-ads][sync-ad-groups] first row =", sourceRows[0] ?? null);
-
-  const rows = buildGoogleAdsAdGroupMetricRows({
-    owner_id: params.owner_id,
-    customer_id: params.customer_id,
-    sourceRows,
-  });
-
-  if (rows.length > 0) {
-    await supabaseAdminUpsert(
-      "ads_metrics_ad_groups?on_conflict=owner_id,provider,customer_id,ad_group_id,date",
-      rows
-    );
-  }
-
-  return {
-    ok: true,
-    total_rows: rows.length,
-  };
-}
-
+// Synchronise les métriques au niveau campaign.
 async function syncGoogleAdsCampaignMetrics(params: {
   owner_id: string;
   customer_id: string;
@@ -2428,48 +2034,48 @@ async function syncGoogleAdsCampaignMetrics(params: {
   date_to: string;
   login_customer_id?: string;
 }) {
-  let token = await getGoogleAdsToken(params.owner_id);
-  token = await refreshGoogleAccessTokenIfNeeded(params.owner_id, token);
-
-  const query = `
-    SELECT
-      campaign.id,
-      campaign.name,
-      campaign.status,
-      campaign.serving_status,
-      campaign.advertising_channel_type,
-      campaign.advertising_channel_sub_type,
-      segments.date,
-      metrics.impressions,
-      metrics.clicks,
-      metrics.ctr,
-      metrics.cost_micros,
-      metrics.conversions,
-      metrics.conversions_value,
-      metrics.video_trueview_views,
-      metrics.video_trueview_view_rate,
-      metrics.average_video_watch_time_duration_millis,
-      metrics.video_watch_time_duration_millis,
-      metrics.video_quartile_p25_rate,
-      metrics.video_quartile_p50_rate,
-      metrics.video_quartile_p75_rate,
-      metrics.video_quartile_p100_rate
-    FROM campaign
-    WHERE segments.date BETWEEN '${params.date_from}' AND '${params.date_to}'
-      AND campaign.status != 'REMOVED'
-  `.trim();
+  const dateFrom = safeGaqlDate(params.date_from);
+  const dateTo = safeGaqlDate(params.date_to);
+  const access_token = await getFreshGoogleAdsAccessToken(params.owner_id);
 
   const sourceRows = await googleAdsSearchStream({
-    access_token: String(token.access_token),
+    access_token,
     customer_id: params.customer_id,
-    query,
     login_customer_id: params.login_customer_id,
+    query: `
+      SELECT
+        campaign.id,
+        campaign.name,
+        campaign.status,
+        campaign.serving_status,
+        campaign.advertising_channel_type,
+        campaign.advertising_channel_sub_type,
+        segments.date,
+        metrics.impressions,
+        metrics.clicks,
+        metrics.ctr,
+        metrics.cost_micros,
+        metrics.average_cpc,
+        metrics.average_cpm,
+        metrics.conversions,
+        metrics.conversions_from_interactions_rate,
+        metrics.cost_per_conversion,
+        metrics.conversions_value,
+        metrics.video_trueview_views,
+        metrics.video_trueview_view_rate,
+        metrics.average_video_watch_time_duration_millis,
+        metrics.video_watch_time_duration_millis,
+        metrics.video_quartile_p25_rate,
+        metrics.video_quartile_p50_rate,
+        metrics.video_quartile_p75_rate,
+        metrics.video_quartile_p100_rate
+      FROM campaign
+      WHERE segments.date BETWEEN '${dateFrom}' AND '${dateTo}'
+        AND campaign.status != 'REMOVED'
+    `.trim(),
   });
 
-  console.log("[google-ads][sync-campaigns] sourceRows count =", sourceRows.length);
-  console.log("[google-ads][sync-campaigns] first row =", sourceRows[0] ?? null);
-
-  const rows = buildGoogleAdsCampaignMetricRows({
+  const rows = buildCampaignMetricRows({
     owner_id: params.owner_id,
     customer_id: params.customer_id,
     sourceRows,
@@ -2482,21 +2088,251 @@ async function syncGoogleAdsCampaignMetrics(params: {
     );
   }
 
+  return { ok: true, level: "campaign", total_rows: rows.length };
+}
+
+// Synchronise les métriques au niveau ad group.
+async function syncGoogleAdsAdGroupMetrics(params: {
+  owner_id: string;
+  customer_id: string;
+  date_from: string;
+  date_to: string;
+  login_customer_id?: string;
+}) {
+  const dateFrom = safeGaqlDate(params.date_from);
+  const dateTo = safeGaqlDate(params.date_to);
+  const access_token = await getFreshGoogleAdsAccessToken(params.owner_id);
+
+  const sourceRows = await googleAdsSearchStream({
+    access_token,
+    customer_id: params.customer_id,
+    login_customer_id: params.login_customer_id,
+    query: `
+      SELECT
+        campaign.id,
+        campaign.name,
+        campaign.status,
+        campaign.serving_status,
+        campaign.advertising_channel_type,
+        campaign.advertising_channel_sub_type,
+        ad_group.id,
+        ad_group.name,
+        ad_group.status,
+        segments.date,
+        metrics.impressions,
+        metrics.clicks,
+        metrics.ctr,
+        metrics.cost_micros,
+        metrics.average_cpc,
+        metrics.average_cpm,
+        metrics.conversions,
+        metrics.conversions_from_interactions_rate,
+        metrics.cost_per_conversion,
+        metrics.conversions_value,
+        metrics.video_trueview_views,
+        metrics.video_trueview_view_rate,
+        metrics.average_video_watch_time_duration_millis,
+        metrics.video_watch_time_duration_millis,
+        metrics.video_quartile_p25_rate,
+        metrics.video_quartile_p50_rate,
+        metrics.video_quartile_p75_rate,
+        metrics.video_quartile_p100_rate
+      FROM ad_group
+      WHERE segments.date BETWEEN '${dateFrom}' AND '${dateTo}'
+        AND campaign.status != 'REMOVED'
+        AND ad_group.status != 'REMOVED'
+    `.trim(),
+  });
+
+  const rows = buildAdGroupMetricRows({
+    owner_id: params.owner_id,
+    customer_id: params.customer_id,
+    sourceRows,
+  });
+
+  if (rows.length > 0) {
+    await supabaseAdminUpsert(
+      "ads_metrics_ad_groups?on_conflict=owner_id,provider,customer_id,ad_group_id,date",
+      rows
+    );
+  }
+
+  return { ok: true, level: "ad_group", total_rows: rows.length };
+}
+
+// Synchronise les métriques au niveau ad.
+async function syncGoogleAdsAdMetrics(params: {
+  owner_id: string;
+  customer_id: string;
+  date_from: string;
+  date_to: string;
+  login_customer_id?: string;
+}) {
+  const dateFrom = safeGaqlDate(params.date_from);
+  const dateTo = safeGaqlDate(params.date_to);
+  const access_token = await getFreshGoogleAdsAccessToken(params.owner_id);
+
+  const sourceRows = await googleAdsSearchStream({
+    access_token,
+    customer_id: params.customer_id,
+    login_customer_id: params.login_customer_id,
+    query: `
+      SELECT
+        campaign.id,
+        campaign.name,
+        campaign.status,
+        campaign.serving_status,
+        campaign.advertising_channel_type,
+        campaign.advertising_channel_sub_type,
+        ad_group.id,
+        ad_group.name,
+        ad_group_ad.status,
+        ad_group_ad.ad.id,
+        ad_group_ad.ad.name,
+        ad_group_ad.ad.type,
+        segments.date,
+        metrics.impressions,
+        metrics.clicks,
+        metrics.ctr,
+        metrics.cost_micros,
+        metrics.average_cpc,
+        metrics.average_cpm,
+        metrics.conversions,
+        metrics.conversions_from_interactions_rate,
+        metrics.cost_per_conversion,
+        metrics.conversions_value,
+        metrics.video_trueview_views,
+        metrics.video_trueview_view_rate,
+        metrics.average_video_watch_time_duration_millis,
+        metrics.video_watch_time_duration_millis,
+        metrics.video_quartile_p25_rate,
+        metrics.video_quartile_p50_rate,
+        metrics.video_quartile_p75_rate,
+        metrics.video_quartile_p100_rate
+      FROM ad_group_ad
+      WHERE segments.date BETWEEN '${dateFrom}' AND '${dateTo}'
+        AND campaign.status != 'REMOVED'
+        AND ad_group_ad.status != 'REMOVED'
+    `.trim(),
+  });
+
+  const rows = buildAdMetricRows({
+    owner_id: params.owner_id,
+    customer_id: params.customer_id,
+    sourceRows,
+  });
+
+  if (rows.length > 0) {
+    await supabaseAdminUpsert(
+      "ads_metrics_ads?on_conflict=owner_id,provider,customer_id,ad_id,date",
+      rows
+    );
+  }
+
+  return { ok: true, level: "ad", total_rows: rows.length };
+}
+
+// Synchronise campaign + ad group + ad.
+async function syncGoogleAdsMetrics(params: {
+  owner_id: string;
+  customer_id: string;
+  date_from: string;
+  date_to: string;
+  login_customer_id?: string;
+}) {
+  const campaign = await syncGoogleAdsCampaignMetrics(params);
+  const ad_group = await syncGoogleAdsAdGroupMetrics(params);
+  const ad = await syncGoogleAdsAdMetrics(params);
+
   return {
     ok: true,
-    total_rows: rows.length,
+    campaign,
+    ad_group,
+    ad,
   };
 }
 
+// Lit les paramètres communs Google Ads depuis req.
+function readGoogleAdsBaseParams(req: express.Request) {
+  return {
+    owner_id: String(req.body?.owner_id || req.query?.owner_id || ""),
+    customer_id: String(req.body?.customer_id || req.query?.customer_id || ""),
+    login_customer_id: String(req.body?.login_customer_id || req.query?.login_customer_id || "") || undefined,
+  };
+}
 
-// POST: sync core/video/conversion metrics
+// ==============================
+// Google Ads API routes
+// ==============================
+
+// Route: liste les campagnes.
+app.get("/api/google-ads/campaigns", requireAuth, async (req, res) => {
+  try {
+    const params = readGoogleAdsBaseParams(req);
+    if (!params.owner_id) return res.status(400).json({ error: "Missing owner_id" });
+    if (!params.customer_id) return res.status(400).json({ error: "Missing customer_id" });
+
+    const campaigns = await listGoogleAdsCampaigns(params);
+
+    return res.json({
+      ok: true,
+      total: campaigns.length,
+      campaigns,
+    });
+  } catch (e: any) {
+    console.error("[google-ads][campaigns] error:", e);
+    return res.status(500).json({ error: e?.message || "Google Ads campaigns error" });
+  }
+});
+
+// Route: liste les ad groups.
+app.get("/api/google-ads/ad-groups", requireAuth, async (req, res) => {
+  try {
+    const params = readGoogleAdsBaseParams(req);
+    if (!params.owner_id) return res.status(400).json({ error: "Missing owner_id" });
+    if (!params.customer_id) return res.status(400).json({ error: "Missing customer_id" });
+
+    const ad_groups = await listGoogleAdsAdGroups(params);
+
+    return res.json({
+      ok: true,
+      total: ad_groups.length,
+      ad_groups,
+    });
+  } catch (e: any) {
+    console.error("[google-ads][ad-groups] error:", e);
+    return res.status(500).json({ error: e?.message || "Google Ads ad groups error" });
+  }
+});
+
+// Route: liste les ads.
+app.get("/api/google-ads/ads", requireAuth, async (req, res) => {
+  try {
+    const params = readGoogleAdsBaseParams(req);
+    if (!params.owner_id) return res.status(400).json({ error: "Missing owner_id" });
+    if (!params.customer_id) return res.status(400).json({ error: "Missing customer_id" });
+
+    const ads = await listGoogleAdsAds(params);
+
+    return res.json({
+      ok: true,
+      total: ads.length,
+      ads,
+    });
+  } catch (e: any) {
+    console.error("[google-ads][ads] error:", e);
+    return res.status(500).json({ error: e?.message || "Google Ads ads error" });
+  }
+});
+
+// Route: synchronise les métriques.
 app.post("/api/google-ads/sync-metrics", requireAuth, async (req, res) => {
   try {
     const owner_id = String(req.body?.owner_id || "");
     const customer_id = String(req.body?.customer_id || "");
     const date_from = String(req.body?.date_from || "");
     const date_to = String(req.body?.date_to || "");
-    const login_customer_id = String(req.body?.login_customer_id || "");
+    const login_customer_id = String(req.body?.login_customer_id || "") || undefined;
 
     if (!owner_id) return res.status(400).json({ error: "Missing owner_id" });
     if (!customer_id) return res.status(400).json({ error: "Missing customer_id" });
@@ -2508,91 +2344,60 @@ app.post("/api/google-ads/sync-metrics", requireAuth, async (req, res) => {
       customer_id,
       date_from,
       date_to,
-      login_customer_id: login_customer_id || undefined,
+      login_customer_id,
     });
 
     return res.json(result);
   } catch (e: any) {
     console.error("[google-ads][sync-metrics] error:", e);
-    return res.status(500).json({
-      error: e?.message || "Google Ads sync metrics error",
-    });
+    return res.status(500).json({ error: e?.message || "Google Ads sync metrics error" });
   }
 });
 
-// POST: sync audience segments
-app.post("/api/google-ads/sync-segments", requireAuth, async (req, res) => {
-  try {
-    const owner_id = String(req.body?.owner_id || "");
-    const customer_id = String(req.body?.customer_id || "");
-    const date_from = String(req.body?.date_from || "");
-    const date_to = String(req.body?.date_to || "");
-    const login_customer_id = String(req.body?.login_customer_id || "");
-
-    if (!owner_id) return res.status(400).json({ error: "Missing owner_id" });
-    if (!customer_id) return res.status(400).json({ error: "Missing customer_id" });
-    if (!date_from) return res.status(400).json({ error: "Missing date_from" });
-    if (!date_to) return res.status(400).json({ error: "Missing date_to" });
-
-    const result = await syncGoogleAdsSegments({
-      owner_id,
-      customer_id,
-      date_from,
-      date_to,
-      login_customer_id: login_customer_id || undefined,
-    });
-
-    return res.json(result);
-  } catch (e: any) {
-    console.error("[google-ads][sync-segments] error:", e);
-    return res.status(500).json({
-      error: e?.message || "Google Ads sync segments error",
-    });
-  }
-});
-
-// POST: sync everything in one call
+// Route: liste la structure + synchronise les métriques.
 app.post("/api/google-ads/sync-all", requireAuth, async (req, res) => {
   try {
     const owner_id = String(req.body?.owner_id || "");
     const customer_id = String(req.body?.customer_id || "");
     const date_from = String(req.body?.date_from || "");
     const date_to = String(req.body?.date_to || "");
-    const login_customer_id = String(req.body?.login_customer_id || "");
+    const login_customer_id = String(req.body?.login_customer_id || "") || undefined;
 
     if (!owner_id) return res.status(400).json({ error: "Missing owner_id" });
     if (!customer_id) return res.status(400).json({ error: "Missing customer_id" });
     if (!date_from) return res.status(400).json({ error: "Missing date_from" });
     if (!date_to) return res.status(400).json({ error: "Missing date_to" });
 
-    const metricsResult = await syncGoogleAdsMetrics({
-      owner_id,
-      customer_id,
-      date_from,
-      date_to,
-      login_customer_id: login_customer_id || undefined,
-    });
+    const campaigns = await listGoogleAdsCampaigns({ owner_id, customer_id, login_customer_id });
+    const ad_groups = await listGoogleAdsAdGroups({ owner_id, customer_id, login_customer_id });
+    const ads = await listGoogleAdsAds({ owner_id, customer_id, login_customer_id });
 
-    const segmentsResult = await syncGoogleAdsSegments({
+    const metrics = await syncGoogleAdsMetrics({
       owner_id,
       customer_id,
       date_from,
       date_to,
-      login_customer_id: login_customer_id || undefined,
+      login_customer_id,
     });
 
     return res.json({
       ok: true,
-      metrics: metricsResult,
-      segments: segmentsResult,
+      structure: {
+        campaigns: campaigns.length,
+        ad_groups: ad_groups.length,
+        ads: ads.length,
+      },
+      metrics,
     });
   } catch (e: any) {
     console.error("[google-ads][sync-all] error:", e);
-    return res.status(500).json({
-      error: e?.message || "Google Ads sync all error",
-    });
+    return res.status(500).json({ error: e?.message || "Google Ads sync all error" });
   }
 });
+
+
+
+
 
 
 // ==============================
