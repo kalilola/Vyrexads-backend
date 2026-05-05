@@ -2265,6 +2265,49 @@ function readGoogleAdsBaseParams(req: express.Request) {
 // Google Ads API routes
 // ==============================
 
+// Route: liste les comptes Google Ads accessibles.
+app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.query.owner_id || "");
+    const login_customer_id = String(req.query.login_customer_id || "") || undefined;
+
+    if (!owner_id) return res.status(400).json({ error: "Missing owner_id" });
+
+    const access_token = await getFreshGoogleAdsAccessToken(owner_id);
+
+    const listUrl = `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers:listAccessibleCustomers`;
+
+    const listJson = await googleAdsFetch(access_token, listUrl, {
+      loginCustomerId: login_customer_id,
+      method: "GET",
+    });
+
+    const resourceNames: string[] = Array.isArray(listJson?.resourceNames)
+      ? listJson.resourceNames
+      : [];
+
+    const customers = resourceNames.map((resourceName) => {
+      const customer_id = resourceName.split("/")[1];
+
+      return {
+        customer_id,
+        resource_name: resourceName,
+      };
+    });
+
+    return res.json({
+      ok: true,
+      total: customers.length,
+      customers,
+    });
+  } catch (e: any) {
+    console.error("[google-ads][customers] error:", e);
+    return res.status(500).json({
+      error: e?.message || "Google Ads customers error",
+    });
+  }
+});
+
 // Route: liste les campagnes.
 app.get("/api/google-ads/campaigns", requireAuth, async (req, res) => {
   try {
