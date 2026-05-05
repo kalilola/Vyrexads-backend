@@ -2266,19 +2266,29 @@ function readGoogleAdsBaseParams(req: express.Request) {
 // ==============================
 
 // Route: liste les comptes Google Ads accessibles.
+// Route: liste les comptes Google Ads accessibles + upsert google_ads_accounts.
 app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
   try {
     const owner_id = String(req.query.owner_id || "");
-    const login_customer_id = String(req.query.login_customer_id || "") || undefined;
+    const login_customer_id = String(req.query.login_customer_id || "");
 
-    if (!owner_id) return res.status(400).json({ error: "Missing owner_id" });
+    if (!owner_id) {
+      return res.status(400).json({ error: "Missing owner_id" });
+    }
 
-    const access_token = await getFreshGoogleAdsAccessToken(owner_id);
+    console.log("[google-ads][customers] START", {
+      owner_id,
+      login_customer_id: login_customer_id || null,
+    });
+
+    let token = await getGoogleAdsToken(owner_id);
+
+    token = await refreshGoogleAccessTokenIfNeeded(owner_id, token);
 
     const listUrl = `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers:listAccessibleCustomers`;
 
-    const listJson = await googleAdsFetch(access_token, listUrl, {
-      loginCustomerId: login_customer_id,
+    const listJson = await googleAdsFetch(String(token.access_token), listUrl, {
+      loginCustomerId: login_customer_id || undefined,
       method: "GET",
     });
 
@@ -2286,22 +2296,67 @@ app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
       ? listJson.resourceNames
       : [];
 
-    const customers = resourceNames.map((resourceName) => {
-      const customer_id = resourceName.split("/")[1];
+    const customerIds = resourceNames
+      .map((r) => (typeof r === "string" ? r.split("/")[1] : null))
+      .filter(Boolean) as string[];
 
-      return {
-        customer_id,
-        resource_name: resourceName,
-      };
-    });
+    const accounts: GoogleAdsCustomerRow[] = [];
+    const skipped_accounts: Array<{ customer_id: string; error: string }> = [];
+
+    for (const cid of customerIds) {
+      try {
+        const rows = await googleAdsSearch({
+          access_token: String(token.access_token),
+          customer_id: cid,
+          login_customer_id: login_customer_id || undefined,
+          query: `
+            SELECT
+              customer.id,
+              customer.descriptive_name,
+              customer.currency_code,
+              customer.time_zone,
+              customer.manager
+            FROM customer
+            LIMIT 1
+          `.trim(),
+        });
+
+        const row = rows[0] || {};
+        const c = row?.customer || {};
+
+        accounts.push({
+          owner_id,
+          customer_id: String(c.id || cid),
+          resource_name: `customers/${String(c.id || cid)}`,
+          descriptive_name: c.descriptiveName ?? c.descriptive_name ?? null,
+          currency_code: c.currencyCode ?? c.currency_code ?? null,
+          time_zone: c.timeZone ?? c.time_zone ?? null,
+          is_manager: googleAdsBool(c.manager),
+        });
+      } catch (e: any) {
+        skipped_accounts.push({
+          customer_id: cid,
+          error: e?.message || "Unknown error",
+        });
+      }
+    }
+
+    if (accounts.length > 0) {
+      await supabaseAdminUpsert(
+        "google_ads_accounts?on_conflict=owner_id,customer_id",
+        accounts
+      );
+    }
 
     return res.json({
       ok: true,
-      total: customers.length,
-      customers,
+      count: accounts.length,
+      accounts,
+      skipped_accounts,
     });
   } catch (e: any) {
     console.error("[google-ads][customers] error:", e);
+
     return res.status(500).json({
       error: e?.message || "Google Ads customers error",
     });
