@@ -2511,18 +2511,34 @@ app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
     }
 
     for (const rootId of rootCustomerIds) {
-      accountsById.set(rootId, {
-        owner_id,
-        customer_id: rootId,
-        resource_name: `customers/${rootId}`,
-        descriptive_name: null,
-        currency_code: null,
-        time_zone: null,
-        is_manager: null,
-        parent_customer_id: null,
-        level: 0,
-        status: null,
-      });
+      try {
+        const rootInfo = await getGoogleAdsCustomerInfo({
+          access_token: String(token.access_token),
+          owner_id,
+          customer_id: rootId,
+          login_customer_id: login_customer_id || undefined,
+          parent_customer_id: null,
+          level: 0,
+        });
+
+        accountsById.set(rootId, {
+          ...rootInfo,
+          status: null,
+        });
+      } catch {
+        accountsById.set(rootId, {
+          owner_id,
+          customer_id: rootId,
+          resource_name: `customers/${rootId}`,
+          descriptive_name: `Compte ${rootId}`,
+          currency_code: null,
+          time_zone: null,
+          is_manager: null,
+          parent_customer_id: null,
+          level: 0,
+          status: null,
+        });
+      }
 
       await listChildren(rootId, 1);
     }
