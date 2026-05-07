@@ -1991,6 +1991,114 @@ function buildAdGroupMetricRows(params: {
   }).filter((row: any) => row.campaign_id && row.ad_group_id && row.date);
 }
 
+
+
+async function upsertGoogleAdsStructureSnapshot(params: {
+  owner_id: string;
+  customer_id: string;
+  date: string;
+  login_customer_id?: string;
+}) {
+  const date = safeGaqlDate(params.date);
+
+  const campaigns = await listGoogleAdsCampaigns(params);
+  const adGroups = await listGoogleAdsAdGroups(params);
+  const ads = await listGoogleAdsAds(params);
+
+  const campaignRows = campaigns
+    .filter((c: any) => c.id)
+    .map((c: any) => ({
+      owner_id: params.owner_id,
+      provider: "google_ads",
+      customer_id: params.customer_id,
+      campaign_id: c.id,
+      campaign_name: c.name,
+      date,
+      impressions: 0,
+      clicks: 0,
+      campaign_type: c.type,
+      campaign_sub_type: c.sub_type,
+      campaign_status: c.status,
+      campaign_serving_status: c.serving_status,
+      is_video_campaign: c.is_video_campaign,
+      is_performance_max: c.is_performance_max,
+      raw: c.raw || {},
+      updated_at: new Date().toISOString(),
+    }));
+
+  const adGroupRows = adGroups
+    .filter((g: any) => g.campaign_id && g.ad_group_id)
+    .map((g: any) => ({
+      owner_id: params.owner_id,
+      provider: "google_ads",
+      customer_id: params.customer_id,
+      campaign_id: g.campaign_id,
+      campaign_name: g.campaign_name,
+      ad_group_id: g.ad_group_id,
+      ad_group_name: g.ad_group_name,
+      date,
+      impressions: 0,
+      clicks: 0,
+      campaign_type: g.campaign_type,
+      campaign_sub_type: g.campaign_sub_type,
+      ad_group_status: g.ad_group_status,
+      raw: g.raw || {},
+      updated_at: new Date().toISOString(),
+    }));
+
+  const adRows = ads
+    .filter((a: any) => a.campaign_id && a.ad_group_id && a.ad_id)
+    .map((a: any) => ({
+      owner_id: params.owner_id,
+      provider: "google_ads",
+      customer_id: params.customer_id,
+      campaign_id: a.campaign_id,
+      campaign_name: a.campaign_name,
+      ad_group_id: a.ad_group_id,
+      ad_group_name: a.ad_group_name,
+      ad_id: a.ad_id,
+      ad_name: a.ad_name,
+      ad_type: a.ad_type,
+      ad_status: a.ad_status,
+      date,
+      impressions: 0,
+      clicks: 0,
+      campaign_type: a.campaign_type,
+      campaign_sub_type: a.campaign_sub_type,
+      raw: a.raw || {},
+      updated_at: new Date().toISOString(),
+    }));
+
+  if (campaignRows.length > 0) {
+    await supabaseAdminUpsert(
+      "ads_metrics_campaigns?on_conflict=owner_id,provider,customer_id,campaign_id,date",
+      campaignRows
+    );
+  }
+
+  if (adGroupRows.length > 0) {
+    await supabaseAdminUpsert(
+      "ads_metrics_ad_groups?on_conflict=owner_id,provider,customer_id,ad_group_id,date",
+      adGroupRows
+    );
+  }
+
+  if (adRows.length > 0) {
+    await supabaseAdminUpsert(
+      "ads_metrics_ads?on_conflict=owner_id,provider,customer_id,ad_id,date",
+      adRows
+    );
+  }
+
+  return {
+    campaigns: campaignRows.length,
+    ad_groups: adGroupRows.length,
+    ads: adRows.length,
+  };
+}
+
+
+
 // Prépare les lignes de métriques ad pour Supabase.
 function buildAdMetricRows(params: {
   owner_id: string;
@@ -2243,12 +2351,20 @@ async function syncGoogleAdsMetrics(params: {
   date_to: string;
   login_customer_id?: string;
 }) {
+  const structure = await upsertGoogleAdsStructureSnapshot({
+    owner_id: params.owner_id,
+    customer_id: params.customer_id,
+    date: params.date_to,
+    login_customer_id: params.login_customer_id,
+  });
+
   const campaign = await syncGoogleAdsCampaignMetrics(params);
   const ad_group = await syncGoogleAdsAdGroupMetrics(params);
   const ad = await syncGoogleAdsAdMetrics(params);
 
   return {
     ok: true,
+    structure,
     campaign,
     ad_group,
     ad,
