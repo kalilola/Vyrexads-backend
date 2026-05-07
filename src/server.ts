@@ -1439,6 +1439,9 @@ type GoogleAdsCustomerRow = {
   currency_code: string | null;
   time_zone: string | null;
   is_manager: boolean | null;
+  parent_customer_id?: string | null;
+  level?: number | null;
+  status?: string | null;
 };
 
 async function supabaseAdminUpsert(path: string, rows: any[]) {
@@ -2448,19 +2451,88 @@ app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
       .map((r: string) => String(r).split("/")[1])
       .filter(Boolean);
 
-    const { accounts, skipped_accounts } = await discoverGoogleAdsAccountsRecursive({
-      access_token: String(token.access_token),
-      owner_id,
-      root_customer_ids: rootCustomerIds,
-      login_customer_id: login_customer_id || undefined,
-    });
+    const accountsById = new Map<string, GoogleAdsCustomerRow>();
+    const skipped_accounts: Array<{ customer_id: string; error: string }> = [];
+    const visitedManagers = new Set<string>();
 
-    const dbAccounts = accounts;
+    async function listChildren(managerCustomerId: string, level: number) {
+      if (visitedManagers.has(managerCustomerId)) return;
+      visitedManagers.add(managerCustomerId);
 
-    if (dbAccounts.length > 0) {
+      try {
+        const rows = await googleAdsSearchStream({
+          access_token: String(token.access_token),
+          customer_id: managerCustomerId,
+          login_customer_id: login_customer_id || managerCustomerId,
+          query: `
+            SELECT
+              customer_client.client_customer,
+              customer_client.id,
+              customer_client.descriptive_name,
+              customer_client.currency_code,
+              customer_client.time_zone,
+              customer_client.manager,
+              customer_client.level
+            FROM customer_client
+          `.trim(),
+        });
+
+        for (const r of rows) {
+          const cc = r?.customerClient || r?.customer_client || {};
+          const childId = String(cc.id || "").replace(/\D/g, "");
+
+          if (!childId || childId === managerCustomerId) continue;
+
+          const isManager = googleAdsBool(cc.manager);
+
+          accountsById.set(childId, {
+            owner_id,
+            customer_id: childId,
+            resource_name: cc.clientCustomer || cc.client_customer || `customers/${childId}`,
+            descriptive_name: cc.descriptiveName ?? cc.descriptive_name ?? null,
+            currency_code: cc.currencyCode ?? cc.currency_code ?? null,
+            time_zone: cc.timeZone ?? cc.time_zone ?? null,
+            is_manager: isManager,
+            parent_customer_id: managerCustomerId,
+            level,
+            status: null,
+          });
+
+          if (isManager) {
+            await listChildren(childId, level + 1);
+          }
+        }
+      } catch (e: any) {
+        skipped_accounts.push({
+          customer_id: managerCustomerId,
+          error: e?.message || "Unknown error",
+        });
+      }
+    }
+
+    for (const rootId of rootCustomerIds) {
+      accountsById.set(rootId, {
+        owner_id,
+        customer_id: rootId,
+        resource_name: `customers/${rootId}`,
+        descriptive_name: null,
+        currency_code: null,
+        time_zone: null,
+        is_manager: null,
+        parent_customer_id: null,
+        level: 0,
+        status: null,
+      });
+
+      await listChildren(rootId, 1);
+    }
+
+    const accounts = Array.from(accountsById.values());
+
+    if (accounts.length > 0) {
       await supabaseAdminUpsert(
         "google_ads_accounts?on_conflict=owner_id,customer_id",
-        dbAccounts
+        accounts
       );
     }
 
