@@ -2261,6 +2261,164 @@ function readGoogleAdsBaseParams(req: express.Request) {
   };
 }
 
+
+
+type GoogleAdsDiscoveredAccount = GoogleAdsCustomerRow & {
+  parent_customer_id: string | null;
+  level: number;
+};
+
+async function getGoogleAdsCustomerInfo(params: {
+  access_token: string;
+  owner_id: string;
+  customer_id: string;
+  login_customer_id?: string;
+  parent_customer_id?: string | null;
+  level?: number;
+}): Promise<GoogleAdsDiscoveredAccount> {
+  const rows = await googleAdsSearch({
+    access_token: params.access_token,
+    customer_id: params.customer_id,
+    login_customer_id: params.login_customer_id,
+    query: `
+      SELECT
+        customer.id,
+        customer.descriptive_name,
+        customer.currency_code,
+        customer.time_zone,
+        customer.manager
+      FROM customer
+      LIMIT 1
+    `.trim(),
+  });
+
+  const c = rows[0]?.customer || {};
+
+  return {
+    owner_id: params.owner_id,
+    customer_id: String(c.id || params.customer_id),
+    resource_name: `customers/${String(c.id || params.customer_id)}`,
+    descriptive_name: c.descriptiveName ?? c.descriptive_name ?? null,
+    currency_code: c.currencyCode ?? c.currency_code ?? null,
+    time_zone: c.timeZone ?? c.time_zone ?? null,
+    is_manager: googleAdsBool(c.manager),
+    parent_customer_id: params.parent_customer_id ?? null,
+    level: params.level ?? 0,
+  };
+}
+
+async function listGoogleAdsCustomerClients(params: {
+  access_token: string;
+  owner_id: string;
+  manager_customer_id: string;
+  login_customer_id?: string;
+  level: number;
+}) {
+  const rows = await googleAdsSearchStream({
+    access_token: params.access_token,
+    customer_id: params.manager_customer_id,
+    login_customer_id: params.login_customer_id,
+    query: `
+      SELECT
+        customer_client.client_customer,
+        customer_client.id,
+        customer_client.descriptive_name,
+        customer_client.currency_code,
+        customer_client.time_zone,
+        customer_client.manager,
+        customer_client.level,
+        customer_client.status
+      FROM customer_client
+      WHERE customer_client.status = 'ENABLED'
+    `.trim(),
+  });
+
+  return rows
+    .map((r: any) => {
+      const cc = r?.customerClient || r?.customer_client || {};
+      const childId = String(cc.id || "").replace(/\D/g, "");
+
+      if (!childId || childId === params.manager_customer_id) return null;
+
+      return {
+        owner_id: params.owner_id,
+        customer_id: childId,
+        resource_name: cc.clientCustomer || cc.client_customer || `customers/${childId}`,
+        descriptive_name: cc.descriptiveName ?? cc.descriptive_name ?? null,
+        currency_code: cc.currencyCode ?? cc.currency_code ?? null,
+        time_zone: cc.timeZone ?? cc.time_zone ?? null,
+        is_manager: googleAdsBool(cc.manager),
+        parent_customer_id: params.manager_customer_id,
+        level: params.level,
+      } satisfies GoogleAdsDiscoveredAccount;
+    })
+    .filter(Boolean) as GoogleAdsDiscoveredAccount[];
+}
+
+
+//sub mcc
+
+async function discoverGoogleAdsAccountsRecursive(params: {
+  access_token: string;
+  owner_id: string;
+  root_customer_ids: string[];
+  login_customer_id?: string;
+}) {
+  const accountsById = new Map<string, GoogleAdsDiscoveredAccount>();
+  const skipped_accounts: Array<{ customer_id: string; error: string }> = [];
+  const visitedManagers = new Set<string>();
+
+  async function visit(customer_id: string, parent_customer_id: string | null, level: number) {
+    if (level > 10) return;
+
+    try {
+      const info = await getGoogleAdsCustomerInfo({
+        access_token: params.access_token,
+        owner_id: params.owner_id,
+        customer_id,
+        login_customer_id: params.login_customer_id || undefined,
+        parent_customer_id,
+        level,
+      });
+
+      accountsById.set(info.customer_id, info);
+
+      if (!info.is_manager || visitedManagers.has(info.customer_id)) return;
+      visitedManagers.add(info.customer_id);
+
+      const children = await listGoogleAdsCustomerClients({
+        access_token: params.access_token,
+        owner_id: params.owner_id,
+        manager_customer_id: info.customer_id,
+        login_customer_id: params.login_customer_id || info.customer_id,
+        level: level + 1,
+      });
+
+      for (const child of children) {
+        accountsById.set(child.customer_id, child);
+
+        if (child.is_manager) {
+          await visit(child.customer_id, child.parent_customer_id, child.level);
+        }
+      }
+    } catch (e: any) {
+      skipped_accounts.push({
+        customer_id,
+        error: e?.message || "Unknown error",
+      });
+    }
+  }
+
+  for (const rootId of params.root_customer_ids) {
+    await visit(rootId, null, 0);
+  }
+
+  return {
+    accounts: Array.from(accountsById.values()),
+    skipped_accounts,
+  };
+}
+
 // ==============================
 // Google Ads API routes
 // ==============================
@@ -2276,13 +2434,7 @@ app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Missing owner_id" });
     }
 
-    console.log("[google-ads][customers] START", {
-      owner_id,
-      login_customer_id: login_customer_id || null,
-    });
-
     let token = await getGoogleAdsToken(owner_id);
-
     token = await refreshGoogleAccessTokenIfNeeded(owner_id, token);
 
     const listUrl = `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers:listAccessibleCustomers`;
@@ -2292,59 +2444,23 @@ app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
       method: "GET",
     });
 
-    const resourceNames: string[] = Array.isArray(listJson?.resourceNames)
-      ? listJson.resourceNames
-      : [];
+    const rootCustomerIds = (Array.isArray(listJson?.resourceNames) ? listJson.resourceNames : [])
+      .map((r: string) => String(r).split("/")[1])
+      .filter(Boolean);
 
-    const customerIds = resourceNames
-      .map((r) => (typeof r === "string" ? r.split("/")[1] : null))
-      .filter(Boolean) as string[];
+    const { accounts, skipped_accounts } = await discoverGoogleAdsAccountsRecursive({
+      access_token: String(token.access_token),
+      owner_id,
+      root_customer_ids: rootCustomerIds,
+      login_customer_id: login_customer_id || undefined,
+    });
 
-    const accounts: GoogleAdsCustomerRow[] = [];
-    const skipped_accounts: Array<{ customer_id: string; error: string }> = [];
+    const dbAccounts = accounts;
 
-    for (const cid of customerIds) {
-      try {
-        const rows = await googleAdsSearch({
-          access_token: String(token.access_token),
-          customer_id: cid,
-          login_customer_id: login_customer_id || undefined,
-          query: `
-            SELECT
-              customer.id,
-              customer.descriptive_name,
-              customer.currency_code,
-              customer.time_zone,
-              customer.manager
-            FROM customer
-            LIMIT 1
-          `.trim(),
-        });
-
-        const row = rows[0] || {};
-        const c = row?.customer || {};
-
-        accounts.push({
-          owner_id,
-          customer_id: String(c.id || cid),
-          resource_name: `customers/${String(c.id || cid)}`,
-          descriptive_name: c.descriptiveName ?? c.descriptive_name ?? null,
-          currency_code: c.currencyCode ?? c.currency_code ?? null,
-          time_zone: c.timeZone ?? c.time_zone ?? null,
-          is_manager: googleAdsBool(c.manager),
-        });
-      } catch (e: any) {
-        skipped_accounts.push({
-          customer_id: cid,
-          error: e?.message || "Unknown error",
-        });
-      }
-    }
-
-    if (accounts.length > 0) {
+    if (dbAccounts.length > 0) {
       await supabaseAdminUpsert(
         "google_ads_accounts?on_conflict=owner_id,customer_id",
-        accounts
+        dbAccounts
       );
     }
 
