@@ -2634,8 +2634,10 @@ function extractAssetResourceNames(items: any): string[] {
 async function syncGoogleAdsAdCreativeContent(params: {
   owner_id: string;
   customer_id: string;
+  date_to: string;
   login_customer_id?: string;
 }) {
+
   const access_token = await getFreshGoogleAdsAccessToken(params.owner_id);
   const now = new Date().toISOString();
 
@@ -2753,12 +2755,61 @@ async function syncGoogleAdsAdCreativeContent(params: {
     });
   }
 
+  const videoAssetNames = Array.from(
+  new Set(
+    creativeRows
+      .map((row) => row.video_asset_resource_name)
+      .filter(Boolean)
+    )
+  );
+
+  const videoAssetsByResourceName = new Map<string, any>();
+
+  for (const resourceName of videoAssetNames) {
+    const assetRows = await safeGoogleAdsSearchStream({
+      access_token,
+      customer_id: params.customer_id,
+      login_customer_id: params.login_customer_id,
+      query: `
+        SELECT
+          asset.resource_name,
+          asset.id,
+          asset.name,
+          asset.type,
+          asset.youtube_video_asset.youtube_video_id,
+          asset.youtube_video_asset.youtube_video_title
+        FROM asset
+        WHERE asset.resource_name = '${resourceName}'
+      `.trim(),
+    });
+
+    for (const assetRow of assetRows) {
+      const asset = assetRow?.asset || {};
+      const key = googleAdsString(asset?.resourceName || asset?.resource_name);
+      if (key) videoAssetsByResourceName.set(key, asset);
+    }
+  }
+
+  for (const row of creativeRows) {
+    const asset = row.video_asset_resource_name
+      ? videoAssetsByResourceName.get(row.video_asset_resource_name)
+      : null;
+
+    row.youtube_video_id =
+      googleAdsString(asset?.youtubeVideoAsset?.youtubeVideoId) ||
+      googleAdsString(asset?.youtube_video_asset?.youtube_video_id);
+
+    row.youtube_video_title =
+      googleAdsString(asset?.youtubeVideoAsset?.youtubeVideoTitle) ||
+      googleAdsString(asset?.youtube_video_asset?.youtube_video_title);
+  }
+
   if (creativeRows.length > 0) {
     await supabaseAdminUpsert(
       "ads_metrics_ads?on_conflict=owner_id,provider,customer_id,ad_id,date",
       creativeRows.map((row) => ({
         ...row,
-        date: new Date().toISOString().slice(0, 10),
+        date: safeGaqlDate(params.date_to),
         impressions: 0,
         clicks: 0,
       }))
@@ -2796,9 +2847,10 @@ async function syncGoogleAdsMetrics(params: {
   
   const ad = await syncGoogleAdsAdMetrics(params);  
   const ad_creative_content = await syncGoogleAdsAdCreativeContent({
-  owner_id: params.owner_id,
-  customer_id: params.customer_id,
-  login_customer_id: params.login_customer_id,
+    owner_id: params.owner_id,
+    customer_id: params.customer_id,
+    date_to: params.date_to,
+    login_customer_id: params.login_customer_id,
   });
 
   return {
