@@ -2139,9 +2139,7 @@ function buildAdCreativeFields(ad: any) {
       googleAdsString(bumper?.actionHeadline || bumper?.action_headline) ||
       googleAdsString(outStream?.headline),
 
-    video_ad_description:
-      googleAdsString(inStream?.description1 || inStream?.description_1) ||
-      googleAdsString(inStream?.description2 || inStream?.description_2),
+    video_ad_description: null,
 
     call_to_action:
       googleAdsString(inStream?.actionButtonLabel || inStream?.action_button_label) ||
@@ -2505,8 +2503,6 @@ async function syncGoogleAdsAdMetrics(params: {
         ad_group_ad.ad.video_ad.video.asset,
         ad_group_ad.ad.video_ad.in_stream.action_headline,
         ad_group_ad.ad.video_ad.in_stream.action_button_label,
-        ad_group_ad.ad.video_ad.in_stream.description1,
-        ad_group_ad.ad.video_ad.in_stream.description2,
         segments.date,
         metrics.impressions,
         metrics.clicks,
