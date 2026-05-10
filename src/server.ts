@@ -4892,6 +4892,60 @@ app.post("/api/facebook/sync-ads-all", requireAuth, async (req, res) => {
         const adSetInsightsRaw = Array.isArray(adSetInsightsJson?.data) ? adSetInsightsJson.data : [];
         const insightsRaw = Array.isArray(adInsightsJson?.data) ? adInsightsJson.data : [];
 
+        // Meta ad sets: structure + metrics
+        const adSetInsightById = new Map<string, any>(
+          adSetInsightsRaw.map((i: any) => [String(i.adset_id), i])
+        );
+
+        const adSetRows = adSetsRaw
+          .filter((set: any) => set?.id)
+          .map((set: any) => {
+            const adset_id = String(set.id);
+            const insight = adSetInsightById.get(adset_id) || {};
+
+            return {
+              owner_id,
+              provider: "facebook",
+              account_id: String(set?.account_id || account_id),
+              ad_account_id_act: `act_${String(set?.account_id || account_id)}`,
+              campaign_id: String(set?.campaign_id || insight?.campaign_id || ""),
+              adset_id,
+              name: String(set?.name || insight?.adset_name || ""),
+              status: set?.status ?? null,
+              effective_status: set?.effective_status ?? null,
+              optimization_goal: set?.optimization_goal ?? null,
+              billing_event: set?.billing_event ?? null,
+              bid_strategy: set?.bid_strategy ?? null,
+              daily_budget: set?.daily_budget != null ? Number(set.daily_budget) / 100 : null,
+              lifetime_budget: set?.lifetime_budget != null ? Number(set.lifetime_budget) / 100 : null,
+              start_time: set?.start_time ?? null,
+              end_time: set?.end_time ?? null,
+              targeting: set?.targeting || {},
+              promoted_object: set?.promoted_object || {},
+              impressions: Number(insight?.impressions ?? 0) || 0,
+              clicks: Number(insight?.clicks ?? 0) || 0,
+              reach: Number(insight?.reach ?? 0) || 0,
+              spend: Math.round((Number(insight?.spend ?? 0) || 0) * 100) / 100,
+              cpm: insight?.cpm != null ? Number(insight.cpm) || 0 : null,
+              cpc: insight?.cpc != null ? Number(insight.cpc) || 0 : null,
+              ctr: insight?.ctr != null ? Number(insight.ctr) || 0 : null,
+              actions: fbActionsArrayToObject(insight?.actions),
+              video_play_actions: fbActionsArrayToObject(insight?.video_play_actions),
+              metrics_raw: insight || null,
+              raw: set,
+              fetched_at: new Date().toISOString(),
+            };
+          })
+          .filter((row: any) => row.campaign_id && row.adset_id);
+
+        if (adSetRows.length > 0) {
+          await supabaseAdminUpsert(
+            "meta_ad_sets?on_conflict=owner_id,provider,adset_id",
+            adSetRows
+          );
+          ad_sets_synced += adSetRows.length;
+        }
+
         const adInsightById = new Map<string, any>(
           insightsRaw.map((i: any) => [String(i.ad_id), i])
         );
