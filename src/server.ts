@@ -5015,6 +5015,63 @@ app.post("/api/facebook/sync-ads-all", requireAuth, async (req, res) => {
           ads_synced += adRows.length;
         }
 
+        const fallbackAdSetRows = Array.from(
+          new Map(
+            adsRaw
+              .filter((ad: any) => ad?.adset_id)
+              .map((ad: any) => {
+                const adset_id = String(ad.adset_id);
+
+                return [
+                  adset_id,
+                  {
+                    owner_id,
+                    provider: "facebook",
+                    account_id: String(ad?.account_id || account_id),
+                    ad_account_id_act: `act_${String(ad?.account_id || account_id)}`,
+                    campaign_id: String(ad?.campaign_id || ""),
+                    adset_id,
+                    name: String(ad?.adset_id || "Ad Set"),
+                    status: null,
+                    effective_status: null,
+                    optimization_goal: null,
+                    billing_event: null,
+                    bid_strategy: null,
+                    daily_budget: null,
+                    lifetime_budget: null,
+                    start_time: null,
+                    end_time: null,
+                    targeting: {},
+                    promoted_object: {},
+                    impressions: 0,
+                    clicks: 0,
+                    reach: 0,
+                    spend: 0,
+                    cpm: null,
+                    cpc: null,
+                    ctr: null,
+                    actions: {},
+                    video_play_actions: {},
+                    metrics_raw: null,
+                    raw: {
+                      source: "fallback_from_ads",
+                      ad,
+                    },
+                    fetched_at: new Date().toISOString(),
+                  },
+                ];
+              })
+          ).values()
+        );
+
+        if (fallbackAdSetRows.length > 0) {
+          await supabaseAdminUpsert(
+            "meta_ad_sets?on_conflict=owner_id,provider,adset_id",
+            fallbackAdSetRows
+          );
+          ad_sets_synced += fallbackAdSetRows.length;
+        }
+
 
         
         const creativeByAdId = new Map<
