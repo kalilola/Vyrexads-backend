@@ -2588,6 +2588,187 @@ async function syncGoogleAdsAdMetrics(params: {
 
   return { ok: true, level: "ad", total_rows: rows.length };
 }
+// differencier les different type de campagnes :
+
+
+
+async function safeGoogleAdsSearchStream(args: {
+  access_token: string;
+  customer_id: string;
+  login_customer_id?: string;
+  query: string;
+}) {
+  try {
+    return await googleAdsSearchStream(args);
+  } catch (err: any) {
+    console.warn("[google-ads][creative-content] skipped query:", err?.message || err);
+    return [];
+  }
+}
+
+function textAssetsToJson(items: any) {
+  return Array.isArray(items)
+    ? items.map((x: any) => ({
+        text: googleAdsString(x?.text),
+        pinned_field: googleAdsString(x?.pinnedField || x?.pinned_field),
+        asset_performance_label: googleAdsString(
+          x?.assetPerformanceLabel || x?.asset_performance_label
+        ),
+      }))
+    : [];
+}
+
+function extractAssetResourceNames(items: any): string[] {
+  if (!Array.isArray(items)) return [];
+
+  return items.reduce<string[]>((acc, x: any) => {
+    const value = googleAdsString(
+      x?.asset || x?.assetResourceName || x?.asset_resource_name
+    );
+
+    if (value) acc.push(value);
+    return acc;
+  }, []);
+}
+
+async function syncGoogleAdsAdCreativeContent(params: {
+  owner_id: string;
+  customer_id: string;
+  login_customer_id?: string;
+}) {
+  const access_token = await getFreshGoogleAdsAccessToken(params.owner_id);
+  const now = new Date().toISOString();
+
+  const creativeRows: any[] = [];
+
+  // 1) Search Ads
+  const responsiveSearchRows = await safeGoogleAdsSearchStream({
+    access_token,
+    customer_id: params.customer_id,
+    login_customer_id: params.login_customer_id,
+    query: `
+      SELECT
+        campaign.id,
+        campaign.name,
+        ad_group.id,
+        ad_group.name,
+        ad_group_ad.ad.id,
+        ad_group_ad.ad.type,
+        ad_group_ad.ad.final_urls,
+        ad_group_ad.ad.display_url,
+        ad_group_ad.ad.responsive_search_ad.headlines,
+        ad_group_ad.ad.responsive_search_ad.descriptions
+      FROM ad_group_ad
+      WHERE ad_group_ad.ad.type = RESPONSIVE_SEARCH_AD
+        AND campaign.status != 'REMOVED'
+        AND ad_group_ad.status != 'REMOVED'
+    `.trim(),
+  });
+
+  for (const r of responsiveSearchRows) {
+    const campaign = r?.campaign || {};
+    const adGroup = r?.adGroup || r?.ad_group || {};
+    const ad = (r?.adGroupAd || r?.ad_group_ad || {})?.ad || {};
+    const rsa = ad?.responsiveSearchAd || ad?.responsive_search_ad || {};
+
+    creativeRows.push({
+      owner_id: params.owner_id,
+      provider: "google_ads",
+      customer_id: params.customer_id,
+      campaign_id: googleAdsString(campaign.id),
+      campaign_name: googleAdsString(campaign.name),
+      ad_group_id: googleAdsString(adGroup.id),
+      ad_group_name: googleAdsString(adGroup.name),
+      ad_id: googleAdsString(ad.id),
+      ad_type: googleAdsString(ad.type),
+      responsive_search_headlines: textAssetsToJson(rsa.headlines),
+      responsive_search_descriptions: textAssetsToJson(rsa.descriptions),
+      final_urls: ad?.finalUrls || ad?.final_urls || [],
+      display_url: googleAdsString(ad?.displayUrl || ad?.display_url),
+      creative_content_raw: r,
+      updated_at: now,
+    });
+  }
+
+  // 2) Demand Gen Video Responsive Ads
+  const demandGenVideoRows = await safeGoogleAdsSearchStream({
+    access_token,
+    customer_id: params.customer_id,
+    login_customer_id: params.login_customer_id,
+    query: `
+      SELECT
+        campaign.id,
+        campaign.name,
+        ad_group.id,
+        ad_group.name,
+        ad_group_ad.ad.id,
+        ad_group_ad.ad.type,
+        ad_group_ad.ad.final_urls,
+        ad_group_ad.ad.demand_gen_video_responsive_ad.business_name,
+        ad_group_ad.ad.demand_gen_video_responsive_ad.call_to_actions,
+        ad_group_ad.ad.demand_gen_video_responsive_ad.descriptions,
+        ad_group_ad.ad.demand_gen_video_responsive_ad.headlines,
+        ad_group_ad.ad.demand_gen_video_responsive_ad.long_headlines,
+        ad_group_ad.ad.demand_gen_video_responsive_ad.videos
+      FROM ad_group_ad
+      WHERE ad_group_ad.ad.type = DEMAND_GEN_VIDEO_RESPONSIVE_AD
+        AND campaign.status != 'REMOVED'
+        AND ad_group_ad.status != 'REMOVED'
+    `.trim(),
+  });
+
+  for (const r of demandGenVideoRows) {
+    const campaign = r?.campaign || {};
+    const adGroup = r?.adGroup || r?.ad_group || {};
+    const ad = (r?.adGroupAd || r?.ad_group_ad || {})?.ad || {};
+    const dg =
+      ad?.demandGenVideoResponsiveAd ||
+      ad?.demand_gen_video_responsive_ad ||
+      {};
+
+    const videoAssets = extractAssetResourceNames(dg.videos);
+
+    creativeRows.push({
+      owner_id: params.owner_id,
+      provider: "google_ads",
+      customer_id: params.customer_id,
+      campaign_id: googleAdsString(campaign.id),
+      campaign_name: googleAdsString(campaign.name),
+      ad_group_id: googleAdsString(adGroup.id),
+      ad_group_name: googleAdsString(adGroup.name),
+      ad_id: googleAdsString(ad.id),
+      ad_type: googleAdsString(ad.type),
+      final_urls: ad?.finalUrls || ad?.final_urls || [],
+      video_asset_resource_name: videoAssets[0] || null,
+      video_ad_headline:
+        googleAdsString(dg?.longHeadlines?.[0]?.text || dg?.long_headlines?.[0]?.text) ||
+        googleAdsString(dg?.headlines?.[0]?.text),
+      video_ad_description: googleAdsString(dg?.descriptions?.[0]?.text),
+      call_to_action: googleAdsString(
+        dg?.callToActions?.[0]?.text ||
+        dg?.call_to_actions?.[0]?.text
+      ),
+      creative_content_raw: r,
+      updated_at: now,
+    });
+  }
+
+  if (creativeRows.length > 0) {
+    await supabaseAdminUpsert(
+      "ads_metrics_ads?on_conflict=owner_id,provider,customer_id,ad_id,date",
+      creativeRows.map((row) => ({
+        ...row,
+        date: new Date().toISOString().slice(0, 10),
+        impressions: 0,
+        clicks: 0,
+      }))
+    );
+  }
+
+  return { ok: true, level: "ad_creative_content", total_rows: creativeRows.length };
+}
+
+
 
 // Synchronise campaign + ad group + ad.
 async function syncGoogleAdsMetrics(params: {
@@ -2612,7 +2793,13 @@ async function syncGoogleAdsMetrics(params: {
     date_to: params.date_to,
     login_customer_id: params.login_customer_id,
   });
+  
   const ad = await syncGoogleAdsAdMetrics(params);  
+  const ad_creative_content = await syncGoogleAdsAdCreativeContent({
+  owner_id: params.owner_id,
+  customer_id: params.customer_id,
+  login_customer_id: params.login_customer_id,
+  });
 
   return {
     ok: true,
@@ -2621,6 +2808,7 @@ async function syncGoogleAdsMetrics(params: {
     ad_group,
     ad_group_targeting,
     ad,
+    ad_creative_content,
   };
 }
 
