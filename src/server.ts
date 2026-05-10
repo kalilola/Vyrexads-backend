@@ -2100,10 +2100,66 @@ async function upsertGoogleAdsStructureSnapshot(params: {
 
 
 // Prépare les lignes de métriques ad pour Supabase.
+function pickGoogleAdsTextAssetArray(value: any) {
+  const items = Array.isArray(value) ? value : [];
+  return items.map((x: any) => ({
+    text: x?.text ?? null,
+    pinned_field: x?.pinnedField ?? x?.pinned_field ?? null,
+    asset_performance_label:
+      x?.assetPerformanceLabel ?? x?.asset_performance_label ?? null,
+  }));
+}
+
+function buildAdCreativeFields(ad: any) {
+  const responsiveSearchAd =
+    ad?.responsiveSearchAd || ad?.responsive_search_ad || {};
+  const videoAd = ad?.videoAd || ad?.video_ad || {};
+  const inStream = videoAd?.inStream || videoAd?.in_stream || {};
+  const bumper = videoAd?.bumper || {};
+  const outStream = videoAd?.outStream || videoAd?.out_stream || {};
+
+  return {
+    final_urls: ad?.finalUrls || ad?.final_urls || [],
+    display_url: googleAdsString(ad?.displayUrl || ad?.display_url),
+
+    responsive_search_headlines: pickGoogleAdsTextAssetArray(
+      responsiveSearchAd?.headlines
+    ),
+    responsive_search_descriptions: pickGoogleAdsTextAssetArray(
+      responsiveSearchAd?.descriptions
+    ),
+
+    video_asset_resource_name:
+      googleAdsString(videoAd?.video?.asset) ||
+      googleAdsString(videoAd?.videoAsset) ||
+      googleAdsString(videoAd?.video_asset),
+
+    video_ad_headline:
+      googleAdsString(inStream?.actionHeadline || inStream?.action_headline) ||
+      googleAdsString(bumper?.actionHeadline || bumper?.action_headline) ||
+      googleAdsString(outStream?.headline),
+
+    video_ad_description:
+      googleAdsString(inStream?.description1 || inStream?.description_1) ||
+      googleAdsString(inStream?.description2 || inStream?.description_2),
+
+    call_to_action:
+      googleAdsString(inStream?.actionButtonLabel || inStream?.action_button_label) ||
+      googleAdsString(bumper?.actionButtonLabel || bumper?.action_button_label),
+
+    creative_content_raw: {
+      final_urls: ad?.finalUrls || ad?.final_urls || [],
+      responsive_search_ad: responsiveSearchAd,
+      video_ad: videoAd,
+    },
+  };
+}
+
 function buildAdMetricRows(params: {
   owner_id: string;
   customer_id: string;
   sourceRows: any[];
+  videoAssetsByResourceName?: Map<string, any>;
 }) {
   return params.sourceRows.map((r: any) => {
     const campaign = r?.campaign || {};
@@ -2112,6 +2168,11 @@ function buildAdMetricRows(params: {
     const ad = adGroupAd?.ad || {};
     const segments = r?.segments || {};
     const metrics = r?.metrics || {};
+
+    const creative = buildAdCreativeFields(ad);
+    const videoAsset = creative.video_asset_resource_name
+      ? params.videoAssetsByResourceName?.get(creative.video_asset_resource_name)
+      : null;
 
     return {
       ...baseGoogleAdsMeta({
@@ -2127,6 +2188,15 @@ function buildAdMetricRows(params: {
       ad_status: googleAdsString(adGroupAd.status),
       date: googleAdsString(segments.date),
       ...mapCommonGoogleAdsMetrics(metrics),
+
+      ...creative,
+      youtube_video_id:
+        googleAdsString(videoAsset?.youtubeVideoAsset?.youtubeVideoId) ||
+        googleAdsString(videoAsset?.youtube_video_asset?.youtube_video_id),
+      youtube_video_title:
+        googleAdsString(videoAsset?.youtubeVideoAsset?.youtubeVideoTitle) ||
+        googleAdsString(videoAsset?.youtube_video_asset?.youtube_video_title),
+
       raw: r,
       updated_at: new Date().toISOString(),
     };
@@ -2271,6 +2341,133 @@ async function syncGoogleAdsAdGroupMetrics(params: {
   return { ok: true, level: "ad_group", total_rows: rows.length };
 }
 
+
+
+
+//Ajoute la synchro ciblage ad group
+async function syncGoogleAdsAdGroupTargeting(params: {
+  owner_id: string;
+  customer_id: string;
+  date_to: string;
+  login_customer_id?: string;
+}) {
+  const date = safeGaqlDate(params.date_to);
+  const access_token = await getFreshGoogleAdsAccessToken(params.owner_id);
+
+  const sourceRows = await googleAdsSearchStream({
+    access_token,
+    customer_id: params.customer_id,
+    login_customer_id: params.login_customer_id,
+    query: `
+      SELECT
+        campaign.id,
+        campaign.name,
+        ad_group.id,
+        ad_group.name,
+        ad_group_criterion.criterion_id,
+        ad_group_criterion.type,
+        ad_group_criterion.status,
+        ad_group_criterion.keyword.text,
+        ad_group_criterion.keyword.match_type,
+        ad_group_criterion.placement.url,
+        ad_group_criterion.topic.topic_constant,
+        ad_group_criterion.topic.path,
+        ad_group_criterion.user_list.user_list
+      FROM ad_group_criterion
+      WHERE campaign.status != 'REMOVED'
+        AND ad_group.status != 'REMOVED'
+        AND ad_group_criterion.status != 'REMOVED'
+    `.trim(),
+  });
+
+  const grouped = new Map<string, any>();
+
+  for (const r of sourceRows) {
+    const campaign = r?.campaign || {};
+    const adGroup = r?.adGroup || r?.ad_group || {};
+    const criterion = r?.adGroupCriterion || r?.ad_group_criterion || {};
+    const adGroupId = googleAdsString(adGroup.id);
+
+    if (!adGroupId) continue;
+
+    if (!grouped.has(adGroupId)) {
+      grouped.set(adGroupId, {
+        owner_id: params.owner_id,
+        provider: "google_ads",
+        customer_id: params.customer_id,
+        campaign_id: googleAdsString(campaign.id),
+        campaign_name: googleAdsString(campaign.name),
+        ad_group_id: adGroupId,
+        ad_group_name: googleAdsString(adGroup.name),
+        date,
+        impressions: 0,
+        clicks: 0,
+        keywords: [],
+        placements: [],
+        topics: [],
+        audiences: [],
+        targeting_raw: [],
+        updated_at: new Date().toISOString(),
+      });
+    }
+
+    const row = grouped.get(adGroupId);
+    const type = googleAdsString(criterion.type);
+    const item = {
+      criterion_id: googleAdsString(criterion.criterionId || criterion.criterion_id),
+      type,
+      status: googleAdsString(criterion.status),
+      raw: criterion,
+    };
+
+    if (type === "KEYWORD") {
+      row.keywords.push({
+        ...item,
+        text: googleAdsString(criterion?.keyword?.text),
+        match_type: googleAdsString(
+          criterion?.keyword?.matchType || criterion?.keyword?.match_type
+        ),
+      });
+    } else if (type === "PLACEMENT") {
+      row.placements.push({
+        ...item,
+        url: googleAdsString(criterion?.placement?.url),
+      });
+    } else if (type === "TOPIC") {
+      row.topics.push({
+        ...item,
+        topic_constant: googleAdsString(
+          criterion?.topic?.topicConstant || criterion?.topic?.topic_constant
+        ),
+        path: criterion?.topic?.path || [],
+      });
+    } else if (type === "USER_LIST") {
+      row.audiences.push({
+        ...item,
+        user_list: googleAdsString(
+          criterion?.userList?.userList || criterion?.user_list?.user_list
+        ),
+      });
+    }
+
+    row.targeting_raw.push(criterion);
+  }
+
+  const rows = Array.from(grouped.values());
+
+  if (rows.length > 0) {
+    await supabaseAdminUpsert(
+      "ads_metrics_ad_groups?on_conflict=owner_id,provider,customer_id,ad_group_id,date",
+      rows
+    );
+  }
+
+  return { ok: true, level: "ad_group_targeting", total_rows: rows.length };
+}
+
+
+
+
 // Synchronise les métriques au niveau ad.
 async function syncGoogleAdsAdMetrics(params: {
   owner_id: string;
@@ -2301,6 +2498,15 @@ async function syncGoogleAdsAdMetrics(params: {
         ad_group_ad.ad.id,
         ad_group_ad.ad.name,
         ad_group_ad.ad.type,
+        ad_group_ad.ad.final_urls,
+        ad_group_ad.ad.display_url,
+        ad_group_ad.ad.responsive_search_ad.headlines,
+        ad_group_ad.ad.responsive_search_ad.descriptions,
+        ad_group_ad.ad.video_ad.video.asset,
+        ad_group_ad.ad.video_ad.in_stream.action_headline,
+        ad_group_ad.ad.video_ad.in_stream.action_button_label,
+        ad_group_ad.ad.video_ad.in_stream.description1,
+        ad_group_ad.ad.video_ad.in_stream.description2,
         segments.date,
         metrics.impressions,
         metrics.clicks,
@@ -2327,10 +2533,54 @@ async function syncGoogleAdsAdMetrics(params: {
     `.trim(),
   });
 
+
+
+    const videoAssetResourceNames = Array.from(
+    new Set(
+      sourceRows
+        .map((r: any) => {
+          const adGroupAd = r?.adGroupAd || r?.ad_group_ad || {};
+          const ad = adGroupAd?.ad || {};
+          const creative = buildAdCreativeFields(ad);
+          return creative.video_asset_resource_name;
+        })
+        .filter(Boolean)
+    )
+  );
+
+  const videoAssetsByResourceName = new Map<string, any>();
+
+  for (const resourceName of videoAssetResourceNames) {
+    const assetRows = await googleAdsSearchStream({
+      access_token,
+      customer_id: params.customer_id,
+      login_customer_id: params.login_customer_id,
+      query: `
+        SELECT
+          asset.resource_name,
+          asset.id,
+          asset.name,
+          asset.type,
+          asset.youtube_video_asset.youtube_video_id,
+          asset.youtube_video_asset.youtube_video_title
+        FROM asset
+        WHERE asset.resource_name = '${resourceName}'
+      `.trim(),
+    });
+
+    for (const assetRow of assetRows) {
+      const asset = assetRow?.asset || {};
+      const key = googleAdsString(asset?.resourceName || asset?.resource_name);
+      if (key) videoAssetsByResourceName.set(key, asset);
+    }
+  }
+
+
   const rows = buildAdMetricRows({
     owner_id: params.owner_id,
     customer_id: params.customer_id,
     sourceRows,
+    videoAssetsByResourceName,
   });
 
   if (rows.length > 0) {
@@ -2360,13 +2610,20 @@ async function syncGoogleAdsMetrics(params: {
 
   const campaign = await syncGoogleAdsCampaignMetrics(params);
   const ad_group = await syncGoogleAdsAdGroupMetrics(params);
-  const ad = await syncGoogleAdsAdMetrics(params);
+  const ad_group_targeting = await syncGoogleAdsAdGroupTargeting({
+    owner_id: params.owner_id,
+    customer_id: params.customer_id,
+    date_to: params.date_to,
+    login_customer_id: params.login_customer_id,
+  });
+  const ad = await syncGoogleAdsAdMetrics(params);  
 
   return {
     ok: true,
     structure,
     campaign,
     ad_group,
+    ad_group_targeting,
     ad,
   };
 }
