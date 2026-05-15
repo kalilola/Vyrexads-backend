@@ -390,10 +390,13 @@ function titleFromCreative(creative: any) {
 function descriptionFromCreative(creative: any) {
   const afs = asObject(creative?.asset_feed_spec);
   const oss = asObject(creative?.object_story_spec);
+  const linkData = asObject(oss?.link_data);
+  const videoData = asObject(oss?.video_data);
+
   return (
-    creative?.description ||
+    linkData?.description ||
+    videoData?.link_description ||
     asArray(afs?.descriptions)?.[0]?.text ||
-    oss?.link_data?.description ||
     null
   );
 }
@@ -896,7 +899,6 @@ const CREATIVE_FIELDS = [
   "video_id",
   "body",
   "title",
-  "description",
   "link_url",
   "template_url",
   "url_tags",
@@ -1205,9 +1207,22 @@ function mapCreative(owner_id: string, account_id: string, creative: any) {
     page_id: pageIdFromCreative(creative),
     instagram_actor_id: instagramActorIdFromCreative(creative),
     image_hash: creative.image_hash ?? null,
-    image_url: creative.image_url ?? null,
-    thumbnail_url: creative.thumbnail_url ?? null,
-    video_id: creative.video_id ?? null,
+    image_url:
+      creative?.image_url ||
+      creative?.thumbnail_url ||
+      asObject(creative?.object_story_spec)?.link_data?.picture ||
+      null,
+
+    thumbnail_url:
+      creative?.thumbnail_url ||
+      asObject(creative?.object_story_spec)?.video_data?.image_url ||
+      null,
+
+    video_id:
+      creative?.video_id ||
+      asObject(creative?.object_story_spec)?.video_data?.video_id ||
+      asArray(asObject(creative?.asset_feed_spec)?.videos)?.[0]?.video_id ||
+      null,
     body: primaryTextFromCreative(creative),
     title: titleFromCreative(creative),
     description: descriptionFromCreative(creative),
