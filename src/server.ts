@@ -327,7 +327,10 @@ const TIKTOK_CLIENT_SECRET = process.env.TIKTOK_CLIENT_SECRET || "";
 const TIKTOK_OAUTH_REDIRECT_URI =
   process.env.TIKTOK_OAUTH_REDIRECT_URI ||
   "";
-  
+
+const TIKTOK_OAUTH_SCOPES =
+  process.env.TIKTOK_OAUTH_SCOPES ||
+  ["user.info.basic", "user.info.profile", "user.info.stats", "video.list"].join(",");
 
 // ==============================
 // Facebook OAuth
@@ -412,15 +415,19 @@ async function supabaseUpsertProviderTokenVault(params: {
 
 
 type TikTokTokenRow = {
-  id: string;
-  profile_id: string;
   owner_id: string;
   provider: string;
+  profile_id?: string | null;
+  open_id?: string | null;
+  union_id?: string | null;
+  scope?: string[] | string;
   access_token: string;
-  refresh_token: string | null;
-  access_token_expires_at: string | null;
-  refresh_token_expires_at: string | null;
+  refresh_token?: string | null;
+  access_token_expires_at?: string | null;
+  refresh_token_expires_at?: string | null;
   raw_token?: any;
+  stored_at?: string;
+  updated_at?: string;
 };
 
 type TikTokUserInfoResponse = {
@@ -732,6 +739,107 @@ async function getAllTikTokProfiles() {
   );
 }
 
+
+
+function extractTikTokOAuthPayload(raw: any) {
+  return raw?.data && typeof raw.data === "object" ? raw.data : raw;
+}
+
+function parseTikTokScope(raw: any): string[] {
+  if (typeof raw === "string") {
+    return raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  if (Array.isArray(raw)) {
+    return raw.map(String).map((s) => s.trim()).filter(Boolean);
+  }
+
+  return [];
+}
+
+function normalizeTikTokStoredToken(raw: any, owner_id: string): TikTokTokenRow {
+  let parsed = raw;
+
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      throw new Error("TikTok token stocké invalide: JSON non parsable");
+    }
+  }
+
+  if (parsed?.decrypted_secret) {
+    parsed = parsed.decrypted_secret;
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("TikTok token stocké invalide");
+  }
+
+  if (!parsed.access_token || typeof parsed.access_token !== "string") {
+    throw new Error("TikTok access_token introuvable dans provider_tokens");
+  }
+
+  return {
+    ...parsed,
+    owner_id: parsed.owner_id || owner_id,
+    provider: parsed.provider || "tiktok",
+  };
+}
+
+async function getTikTokTokenByOwnerId(owner_id: string): Promise<TikTokTokenRow | null> {
+  const data = await supabaseAdminRpc<any>("get_provider_token", {
+    p_owner_id: owner_id,
+    p_provider: "tiktok",
+  });
+
+  const token = Array.isArray(data)
+    ? data[0]?.decrypted_secret ?? data[0] ?? null
+    : data?.decrypted_secret ?? data ?? null;
+
+  if (!token) return null;
+
+  return normalizeTikTokStoredToken(token, owner_id);
+}
+
+async function upsertTikTokProviderTokenVault(params: {
+  owner_id: string;
+  profile_id?: string | null;
+  open_id?: string | null;
+  union_id?: string | null;
+  scope?: string[];
+  access_token: string;
+  refresh_token?: string | null;
+  access_token_expires_at?: string | null;
+  refresh_token_expires_at?: string | null;
+  raw_token?: any;
+}) {
+  await supabaseUpsertProviderTokenVault({
+    owner_id: params.owner_id,
+    provider: "tiktok",
+    token: {
+      provider: "tiktok",
+      owner_id: params.owner_id,
+      profile_id: params.profile_id ?? null,
+      open_id: params.open_id ?? null,
+      union_id: params.union_id ?? null,
+      scope: params.scope ?? [],
+      access_token: params.access_token,
+      refresh_token: params.refresh_token ?? null,
+      access_token_expires_at: params.access_token_expires_at ?? null,
+      refresh_token_expires_at: params.refresh_token_expires_at ?? null,
+      raw_token: params.raw_token ?? {},
+      stored_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    },
+  });
+}
+
+
+
 async function markMissingTikTokVideosInactive(params: {
   profile_id: string;
   currentTikTokVideoIds: string[];
@@ -790,44 +898,57 @@ async function refreshTikTokTokenIfNeeded(tokenRow: TikTokTokenRow): Promise<Tik
 
   const tokenText = await tokenRes.text();
   let tokenJson: any = null;
+
   try {
     tokenJson = tokenText ? JSON.parse(tokenText) : null;
   } catch {
     tokenJson = null;
   }
 
-  if (!tokenRes.ok || tokenJson?.error) {
+  const tokenPayload = extractTikTokOAuthPayload(tokenJson);
+
+  if (!tokenRes.ok || tokenJson?.error || tokenPayload?.error) {
     throw new Error(`TikTok refresh token failed: ${tokenRes.status} ${tokenText || "unknown error"}`);
   }
 
-  const nextAccessToken = String(tokenJson?.access_token || "");
-  const nextRefreshToken = String(tokenJson?.refresh_token || tokenRow.refresh_token || "");
+  const nextAccessToken = String(tokenPayload?.access_token || "");
+  if (!nextAccessToken) {
+    throw new Error("TikTok refresh token failed: access_token manquant");
+  }
 
-  const access_token_expires_at = tokenJson?.expires_in
-    ? new Date(Date.now() + Number(tokenJson.expires_in) * 1000).toISOString()
-    : null;
+  const nextRefreshToken = tokenPayload?.refresh_token
+    ? String(tokenPayload.refresh_token)
+    : tokenRow.refresh_token || null;
 
-  const refresh_token_expires_at = tokenJson?.refresh_expires_in
-    ? new Date(Date.now() + Number(tokenJson.refresh_expires_in) * 1000).toISOString()
-    : tokenRow.refresh_token_expires_at;
+  const access_token_expires_at = tokenPayload?.expires_in
+    ? new Date(Date.now() + Number(tokenPayload.expires_in) * 1000).toISOString()
+    : tokenRow.access_token_expires_at ?? null;
 
-  await supabaseAdminRpc("update_tiktok_connection_token", {
-    p_id: tokenRow.id,
-    p_access_token: nextAccessToken,
-    p_refresh_token: nextRefreshToken,
-    p_access_token_expires_at: access_token_expires_at,
-    p_refresh_token_expires_at: refresh_token_expires_at,
-    p_raw_token: tokenJson ?? {},
-  });
+  const refresh_token_expires_at = tokenPayload?.refresh_expires_in
+    ? new Date(Date.now() + Number(tokenPayload.refresh_expires_in) * 1000).toISOString()
+    : tokenRow.refresh_token_expires_at ?? null;
 
-  return {
+  const refreshedToken: TikTokTokenRow = {
     ...tokenRow,
     access_token: nextAccessToken,
     refresh_token: nextRefreshToken,
     access_token_expires_at,
     refresh_token_expires_at,
-    raw_token: tokenJson ?? {},
+    raw_token: {
+      ...(tokenRow.raw_token ?? {}),
+      refresh_response: tokenJson ?? {},
+      scope: tokenPayload?.scope ?? tokenRow.raw_token?.scope,
+    },
+    updated_at: new Date().toISOString(),
   };
+
+  await supabaseUpsertProviderTokenVault({
+    owner_id: tokenRow.owner_id,
+    provider: "tiktok",
+    token: refreshedToken,
+  });
+
+  return refreshedToken;
 }
 
 async function fetchTikTokUserInfo(accessToken: string): Promise<TikTokUserInfoResponse> {
@@ -973,15 +1094,17 @@ async function upsertTikTokProfileAndTokens(params: {
     throw new Error("Impossible de récupérer l'id du profil TikTok après upsert.");
   }
 
-  await supabaseAdminRpc("upsert_tiktok_connection_token", {
-    p_in_profile_id: profile.id,
-    p_in_owner_id: params.owner_id,
-    p_in_provider: "tiktok",
-    p_in_access_token: params.access_token,
-    p_in_refresh_token: params.refresh_token,
-    p_in_access_token_expires_at: params.access_token_expires_at,
-    p_in_refresh_token_expires_at: params.refresh_token_expires_at,
-    p_in_raw_token: params.raw_token ?? {},
+  await upsertTikTokProviderTokenVault({
+    owner_id: params.owner_id,
+    profile_id: profile.id,
+    open_id: params.open_id,
+    union_id: params.union_id,
+    scope: params.scope,
+    access_token: params.access_token,
+    refresh_token: params.refresh_token,
+    access_token_expires_at: params.access_token_expires_at,
+    refresh_token_expires_at: params.refresh_token_expires_at,
+    raw_token: params.raw_token ?? {},
   });
 
   await supabaseAdminInsert("tiktok_profile_snapshots", [
@@ -1066,14 +1189,19 @@ async function upsertTikTokVideosAndSnapshots(params: {
 }
 
 async function getTikTokTokenByProfileId(profile_id: string): Promise<TikTokTokenRow | null> {
-  const data = await supabaseAdminRpc<TikTokTokenRow[] | TikTokTokenRow | null>(
-    "get_tiktok_token_by_profile_id",
-    { p_profile_id: profile_id }
+  const profile = await supabaseAdminSelectSingleRow<{
+    id: string;
+    owner_id: string;
+  }>(
+    `tiktok_profiles?select=id,owner_id&id=eq.${encodeURIComponent(profile_id)}&limit=1`
   );
 
-  if (Array.isArray(data)) return data[0] || null;
-  return data || null;
+  if (!profile?.owner_id) return null;
+
+  return await getTikTokTokenByOwnerId(profile.owner_id);
 }
+
+
 
 async function syncTikTokDataForProfile(profile_id: string) {
   const tokenRow = await getTikTokTokenByProfileId(profile_id);
@@ -1107,9 +1235,9 @@ async function syncTikTokDataForProfile(profile_id: string) {
     union_id: finalUnionId,
     scope,
     access_token: freshToken.access_token,
-    refresh_token: freshToken.refresh_token,
-    access_token_expires_at: freshToken.access_token_expires_at,
-    refresh_token_expires_at: freshToken.refresh_token_expires_at,
+    refresh_token: freshToken.refresh_token ?? null,
+    access_token_expires_at: freshToken.access_token_expires_at ?? null,
+    refresh_token_expires_at: freshToken.refresh_token_expires_at ?? null,
     raw_token: freshToken.raw_token ?? {},
     userInfo,
   });
@@ -1160,10 +1288,7 @@ app.get("/auth/tiktok/start", async (req, res) => {
     const authUrl = new URL("https://www.tiktok.com/v2/auth/authorize/");
     authUrl.searchParams.set("client_key", TIKTOK_CLIENT_KEY);
     authUrl.searchParams.set("response_type", "code");
-    authUrl.searchParams.set(
-      "scope",
-      ["user.info.basic", "user.info.profile", "user.info.stats", "video.list"].join(",")
-    );
+    authUrl.searchParams.set("scope", TIKTOK_OAUTH_SCOPES);
     authUrl.searchParams.set("redirect_uri", TIKTOK_OAUTH_REDIRECT_URI);
     authUrl.searchParams.set("state", state);
     authUrl.searchParams.set("code_challenge", code_challenge);
@@ -1220,30 +1345,30 @@ app.get("/auth/tiktok/callback", async (req, res) => {
       tokenJson = null;
     }
 
-    if (!tokenRes.ok || (tokenJson?.error && tokenJson.error.code !== "ok")) {
+
+    const tokenPayload = extractTikTokOAuthPayload(tokenJson);
+
+    if (!tokenRes.ok || tokenJson?.error || tokenPayload?.error) {
       console.error("[tiktok][callback] token exchange failed:", tokenRes.status, tokenText);
       const u = new URL(return_to);
       u.searchParams.set("tiktok", "error");
       return res.redirect(u.toString());
     }
 
-    const access_token = String(tokenJson?.access_token || "");
-    const refresh_token = tokenJson?.refresh_token ? String(tokenJson.refresh_token) : null;
-    const open_id_from_token = tokenJson?.open_id ? String(tokenJson.open_id) : null;
-    const union_id_from_token = tokenJson?.union_id ? String(tokenJson.union_id) : null;
+    const access_token = String(tokenPayload?.access_token || "");
+    const refresh_token = tokenPayload?.refresh_token ? String(tokenPayload.refresh_token) : null;
+    const open_id_from_token = tokenPayload?.open_id ? String(tokenPayload.open_id) : null;
+    const union_id_from_token = tokenPayload?.union_id ? String(tokenPayload.union_id) : null;
 
-    const access_token_expires_at = tokenJson?.expires_in
-      ? new Date(Date.now() + Number(tokenJson.expires_in) * 1000).toISOString()
+    const access_token_expires_at = tokenPayload?.expires_in
+      ? new Date(Date.now() + Number(tokenPayload.expires_in) * 1000).toISOString()
       : null;
 
-    const refresh_token_expires_at = tokenJson?.refresh_expires_in
-      ? new Date(Date.now() + Number(tokenJson.refresh_expires_in) * 1000).toISOString()
+    const refresh_token_expires_at = tokenPayload?.refresh_expires_in
+      ? new Date(Date.now() + Number(tokenPayload.refresh_expires_in) * 1000).toISOString()
       : null;
 
-    const scope: string[] =
-      typeof tokenJson?.scope === "string"
-        ? tokenJson.scope.split(",").map((s: string) => s.trim()).filter(Boolean)
-        : [];
+    const scope: string[] = parseTikTokScope(tokenPayload?.scope);
 
     if (!access_token) {
       const u = new URL(return_to);
