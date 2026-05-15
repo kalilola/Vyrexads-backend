@@ -65,22 +65,6 @@ if (!N8N_BASE_URL) {
 
 
 
-const SOURCE_SUPABASE_URL = process.env.SOURCE_SUPABASE_URL || "";
-const SOURCE_SUPABASE_SERVICE_ROLE_KEY =
-  process.env.SOURCE_SUPABASE_SERVICE_ROLE_KEY || "";
-
-/**
- * Source DB = ancienne DB de test.
- * Optionnel : utile seulement pour les routes d'import de tokens depuis DB1/DB test.
- * En prod normale, le serveur fonctionne sans ces variables si les tokens sont déjà dans provider_tokens.
- */
-const sourceSupabase =
-  SOURCE_SUPABASE_URL && SOURCE_SUPABASE_SERVICE_ROLE_KEY
-    ? createClient(SOURCE_SUPABASE_URL, SOURCE_SUPABASE_SERVICE_ROLE_KEY, {
-        auth: { persistSession: false },
-      })
-    : null;
-
 const META_OAUTH_SCOPES =
   process.env.FACEBOOK_OAUTH_SCOPES ||
   process.env.META_OAUTH_SCOPES ||
@@ -2192,97 +2176,7 @@ async function syncBreakdownsForAccount(
   }
 }
 
-// =============================================================
-// import Provider_Token depuis la DB1 avec provider dynamique 
-// routes ou la fonction est appeler : S
-// app.post("/api/provider-tokens/import-from-db1", requireAuth, importProviderTokenFromDb1);
-// app.post("/api/meta/import-token-from-db1", requireAuth, importProviderTokenFromDb1);
-// app.post("/api/tiktok/import-token-from-db1", requireAuth, importProviderTokenFromDb1);
-// =============================================================
 
-
-async function importProviderTokenFromDb1(req: express.Request, res: express.Response) {
-  try {
-    const {
-      owner_id,
-      source_owner_id,
-      target_owner_id,
-      provider = "tiktok",
-    } = req.body;
-
-    const sourceOwnerId = source_owner_id || owner_id;
-    const targetOwnerId = target_owner_id || owner_id;
-
-    if (!sourceOwnerId || !targetOwnerId) {
-      return res.status(400).json({
-        ok: false,
-        error: "Missing owner_id/source_owner_id/target_owner_id",
-      });
-    }
-
-    if (!provider || typeof provider !== "string") {
-      return res.status(400).json({
-        ok: false,
-        error: "Missing provider",
-      });
-    }
-
-    if (!sourceSupabase) {
-      return res.status(500).json({
-        ok: false,
-        error:
-          "Missing SOURCE_SUPABASE_URL or SOURCE_SUPABASE_SERVICE_ROLE_KEY. Import token route is unavailable.",
-      });
-    }
-
-    const { data: tokenJson, error: sourceError } = await sourceSupabase.rpc(
-      "export_provider_token_for_transfer",
-      {
-        p_owner_id: sourceOwnerId,
-        p_provider: provider,
-      }
-    );
-
-    if (sourceError) {
-      return res.status(500).json({
-        ok: false,
-        step: "read_source_token",
-        provider,
-        source_owner_id: sourceOwnerId,
-        error: sourceError.message,
-      });
-    }
-
-    if (!tokenJson) {
-      return res.status(404).json({
-        ok: false,
-        provider,
-        source_owner_id: sourceOwnerId,
-        error: `No ${provider} token found in source database`,
-      });
-    }
-
-    await supabaseRpc("upsert_provider_token_admin_json", {
-      p_owner_id: targetOwnerId,
-      p_provider: provider,
-      p_token: tokenJson,
-    });
-
-    return res.json({
-      ok: true,
-      provider,
-      source_owner_id: sourceOwnerId,
-      target_owner_id: targetOwnerId,
-      imported: true,
-    });
-  } catch (err: any) {
-    console.error("[provider-token][import-token-from-db1] error:", err);
-    return res.status(500).json({
-      ok: false,
-      error: err?.message || String(err),
-    });
-  }
-}
 
 
 // =========================================================
@@ -2656,9 +2550,6 @@ app.post(["/api/meta/sync/all", "/api/facebook/sync-ads-all"], requireAuth, asyn
 
 
 
-app.post("/api/provider-tokens/import-from-db1", requireAuth, importProviderTokenFromDb1);
-app.post("/api/meta/import-token-from-db1", requireAuth, importProviderTokenFromDb1);
-app.post("/api/tiktok/import-token-from-db1", requireAuth, importProviderTokenFromDb1);
 
 
 // =========================================================
@@ -6977,69 +6868,7 @@ app.get("/auth/google-ads/callback", async (req, res) => {
   }
 });
 
-app.post("/api/google-ads/import-token-from-db1", requireAuth, async (req, res) => {
-  try {
-    const { owner_id, source_owner_id, target_owner_id } = req.body;
 
-    const sourceOwnerId = source_owner_id || owner_id;
-    const targetOwnerId = target_owner_id || owner_id;
-
-    if (!sourceOwnerId || !targetOwnerId) {
-      return res.status(400).json({
-        ok: false,
-        error: "Missing owner_id/source_owner_id/target_owner_id",
-      });
-    }
-
-    if (!sourceSupabase) {
-      return res.status(500).json({
-        ok: false,
-        error:
-          "Missing SOURCE_SUPABASE_URL or SOURCE_SUPABASE_SERVICE_ROLE_KEY. Import token route is unavailable.",
-      });
-    }
-
-    const { data: tokenJson, error: sourceError } = await sourceSupabase.rpc(
-      "export_provider_token_for_transfer",
-      {
-        p_owner_id: sourceOwnerId,
-        p_provider: "google_ads",
-      }
-    );
-
-    if (sourceError) {
-      return res.status(500).json({
-        ok: false,
-        step: "read_source_token",
-        error: sourceError.message,
-      });
-    }
-
-    if (!tokenJson) {
-      return res.status(404).json({
-        ok: false,
-        error: "No google_ads token found in source database",
-      });
-    }
-
-    await supabaseRpc("upsert_provider_token_admin_json", {
-      p_owner_id: targetOwnerId,
-      p_provider: "google_ads",
-      p_token: tokenJson,
-    });
-
-    return res.json({
-      ok: true,
-      provider: "google_ads",
-      source_owner_id: sourceOwnerId,
-      target_owner_id: targetOwnerId,
-      imported: true,
-    });
-  } catch (e: any) {
-    console.error("[google-ads][import-token-from-db1] error:", e);
-    return res.status(500).json({ ok: false, error: e?.message || String(e) });
-  }
-});
 
 app.post("/api/google-ads/debug/token", requireAuth, async (req, res) => {
   try {
