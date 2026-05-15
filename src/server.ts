@@ -2109,12 +2109,19 @@ async function syncLeadFormsAndLeads(owner_id: string, pages: any[], counters: S
   }
 }
 
-async function syncInsightsForAccount(owner_id: string, account_id: string, userAccessToken: string, counters: SyncCounters, since: string, until: string) {
+async function syncInsightsForAccount(
+  owner_id: string,
+  account_id: string,
+  userAccessToken: string,
+  counters: SyncCounters,
+  since: string,
+  until: string
+) {
   const accountAct = act(account_id);
   const levels = ["account", "campaign", "adset", "ad"];
 
   for (const level of levels) {
-    const rows = await graphGetAllSafe(
+    let rows = await graphGetAllSafe(
       `insights_${level}_${account_id}`,
       `${accountAct}/insights`,
       userAccessToken,
@@ -2128,16 +2135,85 @@ async function syncInsightsForAccount(owner_id: string, account_id: string, user
       50
     );
 
+    /**
+     * Fallback important :
+     * Meta peut renvoyer une erreur 500 sur /act_xxx/insights?level=ad.
+     * Dans ce cas, on récupère les ads stockées en DB puis on appelle /{ad_id}/insights ad par ad.
+     */
+    if (level === "ad" && rows.length === 0) {
+      console.warn(`[meta][fallback] account-level ad insights failed/empty for ${account_id}. Trying ad-by-ad insights.`);
+
+      const q = new URLSearchParams();
+      q.set("select", "ad_id,name,campaign_id,adset_id");
+      q.set("owner_id", `eq.${owner_id}`);
+      q.set("provider", "eq.facebook");
+      q.set("account_id", `eq.${account_id}`);
+      q.set("limit", "1000");
+
+      const ads = await supabaseSelect<any>("meta_ads", q);
+
+      const fallbackRows: any[] = [];
+
+      for (const ad of ads) {
+        if (!ad.ad_id) continue;
+
+        const adRows = await graphGetAllSafe(
+          `insights_single_ad_${ad.ad_id}`,
+          `${ad.ad_id}/insights`,
+          userAccessToken,
+          {
+            fields: INSIGHT_FIELDS,
+            time_range: JSON.stringify({ since, until }),
+            time_increment: 1,
+            limit: 500,
+          },
+          20
+        );
+
+        for (const r of adRows) {
+          fallbackRows.push({
+            ...r,
+            account_id,
+            campaign_id: r.campaign_id ?? ad.campaign_id ?? null,
+            adset_id: r.adset_id ?? ad.adset_id ?? null,
+            ad_id: r.ad_id ?? ad.ad_id,
+            ad_name: r.ad_name ?? ad.name ?? null,
+          });
+        }
+      }
+
+      rows = fallbackRows;
+      console.warn(`[meta][fallback] ad-by-ad insights rows for ${account_id}: ${rows.length}`);
+    }
+
     if (!rows.length) continue;
 
-    await deleteMetricRange("meta_ad_action_metrics_daily", { owner_id, account_id, level, since, until });
+    await deleteMetricRange("meta_ad_action_metrics_daily", {
+      owner_id,
+      account_id,
+      level,
+      since,
+      until,
+    });
 
     const baseRows = rows.map((r) => mapInsightBase(owner_id, level, account_id, r));
-    const videoRows = rows.map((r) => mapVideoInsight(owner_id, level, account_id, r)).filter(Boolean) as Json[];
+    const videoRows = rows
+      .map((r) => mapVideoInsight(owner_id, level, account_id, r))
+      .filter(Boolean) as Json[];
     const actionRows = rows.flatMap((r) => mapActionInsights(owner_id, level, account_id, r));
 
-    await supabaseUpsert("meta_ad_metrics_daily", baseRows, "owner_id,provider,level,date_start,date_stop,account_id,entity_id");
-    await supabaseUpsert("meta_ad_video_metrics_daily", videoRows, "owner_id,provider,level,date_start,date_stop,account_id,entity_id");
+    await supabaseUpsert(
+      "meta_ad_metrics_daily",
+      baseRows,
+      "owner_id,provider,level,date_start,date_stop,account_id,entity_id"
+    );
+
+    await supabaseUpsert(
+      "meta_ad_video_metrics_daily",
+      videoRows,
+      "owner_id,provider,level,date_start,date_stop,account_id,entity_id"
+    );
+
     await supabaseInsert("meta_ad_action_metrics_daily", actionRows);
 
     inc(counters, `insight_${level}_rows_synced`, baseRows.length);
@@ -2145,6 +2221,7 @@ async function syncInsightsForAccount(owner_id: string, account_id: string, user
     inc(counters, "action_metric_rows_synced", actionRows.length);
   }
 }
+
 
 async function syncBreakdownsForAccount(
   owner_id: string,
