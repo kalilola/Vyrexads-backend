@@ -6906,19 +6906,84 @@ async function resolveGoogleAdsCustomerIds(body: GoogleAdsSyncBody, owner_id: st
 
   if (requested.length) return Array.from(new Set(requested));
 
+  const requestedLoginCustomerId = cleanGoogleAdsCustomerId(
+    body.login_customer_id || GOOGLE_ADS_DEFAULT_LOGIN_CUSTOMER_ID
+  );
+
+  const accessible = await googleAdsListAccessibleCustomers(owner_id);
+  const discovered = new Set<string>();
+
+  for (const customer_id of accessible) {
+    discovered.add(customer_id);
+
+    const result = await syncGoogleAdsAccountRows({
+      owner_id,
+      customer_id,
+      login_customer_id: requestedLoginCustomerId || customer_id,
+    });
+
+    for (const childId of result.child_customer_ids || []) {
+      discovered.add(cleanGoogleAdsCustomerId(childId));
+    }
+  }
+
   const q = new URLSearchParams();
   q.set("owner_id", `eq.${owner_id}`);
   q.set("provider", "eq.google_ads");
-  q.set("select", "customer_id");
+  q.set("select", "customer_id,is_manager,status,login_customer_id,parent_customer_id");
   q.set("limit", "1000");
 
-  const existing = await supabaseSelect<{ customer_id: string }>("google_ads_accounts", q);
-  const existingIds = existing.map((r) => cleanGoogleAdsCustomerId(r.customer_id)).filter(Boolean);
-  if (existingIds.length) return Array.from(new Set(existingIds));
+  const accounts = await supabaseSelect<{
+    customer_id: string;
+    is_manager?: boolean;
+    status?: string;
+    login_customer_id?: string;
+    parent_customer_id?: string;
+  }>("google_ads_accounts", q);
 
-  return await googleAdsListAccessibleCustomers(owner_id);
+  const clientIds = accounts
+    .filter((r) => r.is_manager !== true)
+    .filter((r) => String(r.status || "").toUpperCase() !== "CANCELED")
+    .map((r) => cleanGoogleAdsCustomerId(r.customer_id))
+    .filter(Boolean);
+
+  if (clientIds.length) return Array.from(new Set(clientIds));
+
+  const discoveredIds = Array.from(discovered).filter(Boolean);
+  if (discoveredIds.length) return discoveredIds;
+
+  return accessible;
 }
 
+
+
+async function getGoogleAdsLoginCustomerIdFor(
+  owner_id: string,
+  customer_id: string,
+  fallback?: string
+) {
+  const q = new URLSearchParams();
+  q.set("owner_id", `eq.${owner_id}`);
+  q.set("provider", "eq.google_ads");
+  q.set("customer_id", `eq.${cleanGoogleAdsCustomerId(customer_id)}`);
+  q.set("select", "login_customer_id,parent_customer_id,is_manager");
+  q.set("limit", "1");
+
+  const rows = await supabaseSelect<{
+    login_customer_id?: string;
+    parent_customer_id?: string;
+    is_manager?: boolean;
+  }>("google_ads_accounts", q);
+
+  const row = rows[0];
+
+  return cleanGoogleAdsCustomerId(
+    row?.login_customer_id ||
+    row?.parent_customer_id ||
+    fallback ||
+    customer_id
+  );
+}
 // =========================================================
 // GOOGLE ADS ROUTES
 // =========================================================
@@ -7082,7 +7147,11 @@ app.get("/api/google-ads/customers", requireAuth, async (req, res) => {
       const result = await syncGoogleAdsAccountRows({
         owner_id,
         customer_id,
-        login_customer_id: login_customer_id || customer_id,
+        login_customer_id: await getGoogleAdsLoginCustomerIdFor(
+          owner_id,
+          customer_id,
+          login_customer_id || customer_id
+        ),
       });
       inc(counters, "accounts_synced", result.accounts_synced);
       inc(counters, "customer_links_synced", result.customer_links_synced);
@@ -7126,7 +7195,11 @@ app.post("/api/google-ads/sync-structure", requireAuth, async (req, res) => {
         const c = await syncGoogleAdsStructureForCustomer({
           owner_id,
           customer_id,
-          login_customer_id: login_customer_id || customer_id,
+          login_customer_id: await getGoogleAdsLoginCustomerIdFor(
+            owner_id,
+            customer_id,
+            login_customer_id || customer_id
+          ),
         });
         Object.entries(c).forEach(([k, v]) => inc(counters, k, v));
       } catch (e: any) {
@@ -7172,7 +7245,11 @@ app.post("/api/google-ads/sync-metrics", requireAuth, async (req, res) => {
         const c = await syncGoogleAdsMetricsForCustomer({
           owner_id,
           customer_id,
-          login_customer_id: login_customer_id || customer_id,
+          login_customer_id: await getGoogleAdsLoginCustomerIdFor(
+            owner_id,
+            customer_id,
+            login_customer_id || customer_id
+          ),
           date_from,
           date_to,
           level,
@@ -7219,7 +7296,11 @@ app.post("/api/google-ads/sync-all", requireAuth, async (req, res) => {
         const structure = await syncGoogleAdsStructureForCustomer({
           owner_id,
           customer_id,
-          login_customer_id: login_customer_id || customer_id,
+          login_customer_id: await getGoogleAdsLoginCustomerIdFor(
+            owner_id,
+            customer_id,
+            login_customer_id || customer_id
+          ),
         });
         Object.entries(structure).forEach(([k, v]) => inc(counters, k, v));
 
@@ -7227,7 +7308,11 @@ app.post("/api/google-ads/sync-all", requireAuth, async (req, res) => {
           const metrics = await syncGoogleAdsMetricsForCustomer({
             owner_id,
             customer_id,
-            login_customer_id: login_customer_id || customer_id,
+            login_customer_id: await getGoogleAdsLoginCustomerIdFor(
+              owner_id,
+              customer_id,
+              login_customer_id || customer_id
+            ),
             date_from,
             date_to,
             level,
@@ -7238,10 +7323,14 @@ app.post("/api/google-ads/sync-all", requireAuth, async (req, res) => {
         inc(
           counters,
           "change_events_synced",
-          await optionalGoogleAdsSync("change_events", () => syncGoogleAdsChangeEvents({
+          await optionalGoogleAdsSync("change_events", async () => syncGoogleAdsChangeEvents({
             owner_id,
             customer_id,
-            login_customer_id: login_customer_id || customer_id,
+            login_customer_id: await getGoogleAdsLoginCustomerIdFor(
+              owner_id,
+              customer_id,
+              login_customer_id || customer_id
+            ),
             date_from,
             date_to,
           }))
