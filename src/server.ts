@@ -8,7 +8,7 @@ import rateLimit from "express-rate-limit";
 import crypto from "crypto";
 
 const app = express();
-
+app.set("trust proxy", 1);
 // =========================================================
 // ENV
 // =========================================================
@@ -1030,6 +1030,46 @@ const INSIGHT_FIELDS = [
   "cost_per_thruplay",
   "cost_per_15_sec_video_view",
   "cost_per_2_sec_continuous_video_view",
+].join(",");
+
+
+const AD_INSIGHT_FIELDS_SAFE = [
+  "date_start",
+  "date_stop",
+  "account_id",
+  "campaign_id",
+  "campaign_name",
+  "adset_id",
+  "adset_name",
+  "ad_id",
+  "ad_name",
+  "impressions",
+  "reach",
+  "frequency",
+  "spend",
+  "clicks",
+  "unique_clicks",
+  "ctr",
+  "unique_ctr",
+  "cpc",
+  "cpm",
+  "cpp",
+  "inline_link_clicks",
+  "inline_link_click_ctr",
+  "cost_per_inline_link_click",
+  "actions",
+  "action_values",
+  "conversions",
+  "conversion_values",
+  "video_play_actions",
+  "video_15_sec_watched_actions",
+  "video_30_sec_watched_actions",
+  "video_avg_time_watched_actions",
+  "video_p25_watched_actions",
+  "video_p50_watched_actions",
+  "video_p75_watched_actions",
+  "video_p95_watched_actions",
+  "video_p100_watched_actions",
 ].join(",");
 
 const BREAKDOWN_INSIGHT_FIELDS = [
@@ -2121,13 +2161,15 @@ async function syncInsightsForAccount(
   const levels = ["account", "campaign", "adset", "ad"];
 
   for (const level of levels) {
+    const fields = level === "ad" ? AD_INSIGHT_FIELDS_SAFE : INSIGHT_FIELDS;
+
     let rows = await graphGetAllSafe(
       `insights_${level}_${account_id}`,
       `${accountAct}/insights`,
       userAccessToken,
       {
         level,
-        fields: INSIGHT_FIELDS,
+        fields,
         time_range: JSON.stringify({ since, until }),
         time_increment: 1,
         limit: 500,
@@ -2135,13 +2177,10 @@ async function syncInsightsForAccount(
       50
     );
 
-    /**
-     * Fallback important :
-     * Meta peut renvoyer une erreur 500 sur /act_xxx/insights?level=ad.
-     * Dans ce cas, on récupère les ads stockées en DB puis on appelle /{ad_id}/insights ad par ad.
-     */
     if (level === "ad" && rows.length === 0) {
-      console.warn(`[meta][fallback] account-level ad insights failed/empty for ${account_id}. Trying ad-by-ad insights.`);
+      console.warn(
+        `[meta][fallback] global ad insights failed/empty for ${account_id}. Trying filtered ad batches.`
+      );
 
       const q = new URLSearchParams();
       q.set("select", "ad_id,name,campaign_id,adset_id");
@@ -2151,39 +2190,74 @@ async function syncInsightsForAccount(
       q.set("limit", "1000");
 
       const ads = await supabaseSelect<any>("meta_ads", q);
+      console.warn(`[meta][fallback] ads found in DB for ${account_id}: ${ads.length}`);
 
+      const adIds = ads.map((a) => a.ad_id).filter(Boolean);
       const fallbackRows: any[] = [];
 
-      for (const ad of ads) {
-        if (!ad.ad_id) continue;
+      for (let i = 0; i < adIds.length; i += 50) {
+        const batch = adIds.slice(i, i + 50);
 
-        const adRows = await graphGetAllSafe(
-          `insights_single_ad_${ad.ad_id}`,
-          `${ad.ad_id}/insights`,
+        const batchRows = await graphGetAllSafe(
+          `insights_ad_filtered_${account_id}_${i}`,
+          `${accountAct}/insights`,
           userAccessToken,
           {
-            fields: INSIGHT_FIELDS,
+            level: "ad",
+            fields: AD_INSIGHT_FIELDS_SAFE,
             time_range: JSON.stringify({ since, until }),
             time_increment: 1,
+            filtering: JSON.stringify([
+              {
+                field: "ad.id",
+                operator: "IN",
+                value: batch,
+              },
+            ]),
             limit: 500,
           },
           20
         );
 
-        for (const r of adRows) {
-          fallbackRows.push({
-            ...r,
-            account_id,
-            campaign_id: r.campaign_id ?? ad.campaign_id ?? null,
-            adset_id: r.adset_id ?? ad.adset_id ?? null,
-            ad_id: r.ad_id ?? ad.ad_id,
-            ad_name: r.ad_name ?? ad.name ?? null,
-          });
+        fallbackRows.push(...batchRows);
+      }
+
+      if (fallbackRows.length === 0) {
+        console.warn(
+          `[meta][fallback] filtered ad batches empty for ${account_id}. Trying ad-by-ad insights.`
+        );
+
+        for (const ad of ads) {
+          if (!ad.ad_id) continue;
+
+          const adRows = await graphGetAllSafe(
+            `insights_single_ad_${ad.ad_id}`,
+            `${ad.ad_id}/insights`,
+            userAccessToken,
+            {
+              fields: AD_INSIGHT_FIELDS_SAFE,
+              time_range: JSON.stringify({ since, until }),
+              time_increment: 1,
+              limit: 500,
+            },
+            20
+          );
+
+          for (const r of adRows) {
+            fallbackRows.push({
+              ...r,
+              account_id,
+              campaign_id: r.campaign_id ?? ad.campaign_id ?? null,
+              adset_id: r.adset_id ?? ad.adset_id ?? null,
+              ad_id: r.ad_id ?? ad.ad_id,
+              ad_name: r.ad_name ?? ad.name ?? null,
+            });
+          }
         }
       }
 
       rows = fallbackRows;
-      console.warn(`[meta][fallback] ad-by-ad insights rows for ${account_id}: ${rows.length}`);
+      console.warn(`[meta][fallback] final ad insight rows for ${account_id}: ${rows.length}`);
     }
 
     if (!rows.length) continue;
@@ -2197,10 +2271,14 @@ async function syncInsightsForAccount(
     });
 
     const baseRows = rows.map((r) => mapInsightBase(owner_id, level, account_id, r));
+
     const videoRows = rows
       .map((r) => mapVideoInsight(owner_id, level, account_id, r))
       .filter(Boolean) as Json[];
-    const actionRows = rows.flatMap((r) => mapActionInsights(owner_id, level, account_id, r));
+
+    const actionRows = rows.flatMap((r) =>
+      mapActionInsights(owner_id, level, account_id, r)
+    );
 
     await supabaseUpsert(
       "meta_ad_metrics_daily",
