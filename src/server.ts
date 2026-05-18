@@ -1763,19 +1763,45 @@ async function syncOrganicForPages(owner_id: string, pages: any[], counters: Syn
 }
 
 async function syncPagePostMetrics(owner_id: string, page_id: string, post_id: string, pageToken: string, counters: SyncCounters) {
-const metrics = [
-  "post_total_media_view_unique",
-  "post_clicks",
-  "post_reactions_by_type_total",
-  "post_video_views",
-  "post_video_avg_time_watched",
-  "post_video_complete_views_organic",
-  "post_video_views_organic",
-  "post_video_views_autoplayed",
-  "post_video_views_clicked_to_play",
-  "post_video_retention_graph",
-].join(",");
-  const json = await graphGetSafe(`page_post_metrics_${post_id}`, `${post_id}/insights`, pageToken, { metric: metrics, period: "day" });
+  // ✅ FIX 1 : on demande TOUTES les métriques qu'on veut mapper, y compris
+  //   post_impressions, post_engaged_users, post_negative_feedback qui manquaient.
+  // ✅ FIX 2 : on utilise les versions *_unique qui ne sont PAS dépréciées.
+  // ✅ FIX 3 : on ajoute des fallbacks pour les pages "new Pages experience".
+  const metrics = [
+    // Impressions (post_impressions est déprécié → on combine avec _unique)
+    "post_impressions",
+    "post_impressions_unique",
+    "post_impressions_organic",
+    "post_impressions_paid",
+
+    // Engagement
+    "post_engaged_users",
+    "post_clicks",
+    "post_clicks_unique",
+    "post_negative_feedback",
+
+    // Réactions (likes, love, haha, wow, sorry, anger)
+    "post_reactions_by_type_total",
+
+    // Vidéo — post_video_views est déprécié → utiliser les versions plus précises
+    "post_video_views",                  // gardé pour les anciens posts
+    "post_video_views_unique",
+    "post_video_views_organic",
+    "post_video_views_paid",
+    "post_video_avg_time_watched",
+    "post_video_complete_views_organic",
+    "post_video_views_autoplayed",
+    "post_video_views_clicked_to_play",
+    "post_video_view_time",              // temps total visionné (ms)
+
+    // Médias
+    "post_total_media_view_unique",
+  ].join(",");
+
+  const json = await graphGetSafe(`page_post_metrics_${post_id}`, `${post_id}/insights`, pageToken, {
+    metric: metrics,
+    period: "lifetime",   // ✅ FIX 4 : "lifetime" pour les posts (la plupart des métriques de post n'existent qu'en lifetime)
+  });
   if (!json?.data) return;
 
   const byDate = new Map<string, Json>();
@@ -1797,17 +1823,47 @@ const metrics = [
       row.raw[metric.name] = v;
       const value = v.value;
 
-      if (metric.name === "post_impressions") row.impressions = toBigIntNumber(value, 0);
-      if (metric.name === "post_total_media_view_unique") row.impressions_unique = toBigIntNumber(value, 0);
+      // Impressions — fallback en cascade : impressions → _unique → _organic
+      if (metric.name === "post_impressions") {
+        const n = toBigIntNumber(value, 0);
+        if (n > 0 || row.impressions == null) row.impressions = n;
+      }
+      if (metric.name === "post_impressions_unique") {
+        row.impressions_unique = toBigIntNumber(value, 0);
+        // si post_impressions n'a rien renvoyé, on retombe sur _unique
+        if (!row.impressions) row.impressions = toBigIntNumber(value, 0);
+      }
+      if (metric.name === "post_impressions_organic" && !row.impressions) {
+        row.impressions = toBigIntNumber(value, 0);
+      }
+
       if (metric.name === "post_engaged_users") row.engaged_users = toBigIntNumber(value, 0);
+
       if (metric.name === "post_clicks") row.clicks = toBigIntNumber(value, 0);
-      if (metric.name === "post_video_views") row.video_views = toBigIntNumber(value, 0);
+      if (metric.name === "post_clicks_unique" && !row.clicks) row.clicks = toBigIntNumber(value, 0);
+
+      // Video views — fallback en cascade
+      if (metric.name === "post_video_views") {
+        const n = toBigIntNumber(value, 0);
+        if (n > 0) row.video_views = n;
+      }
+      if (metric.name === "post_video_views_unique" && !row.video_views) {
+        row.video_views = toBigIntNumber(value, 0);
+      }
+      if (metric.name === "post_video_views_organic" && !row.video_views) {
+        row.video_views = toBigIntNumber(value, 0);
+      }
+
       if (metric.name === "post_video_avg_time_watched") row.video_avg_time_watched = toNumber(value, null);
       if (metric.name === "post_negative_feedback") row.negative_feedback = toBigIntNumber(value, 0);
+
       if (metric.name === "post_reactions_by_type_total") {
-        const obj = asObject(value);
-        row.reactions_total = Object.values(obj).reduce((sum: number, n: any) => sum + (toNumber(n, 0) || 0), 0);
-        row.likes_count = toBigIntNumber(obj.like, 0) || null;
+        const obj = asObject(value) || {};
+        const total = Object.values(obj).reduce((sum: number, n: any) => sum + (toNumber(n, 0) || 0), 0);
+        row.reactions_total = total;
+        row.likes_count = toBigIntNumber(obj.like, 0) || 0;
+        // Bonus : stocker aussi les détails dans raw pour analyse fine
+        row.raw.reactions_breakdown = obj;
       }
 
       byDate.set(endDate, row);
@@ -1815,6 +1871,18 @@ const metrics = [
   }
 
   const rows = Array.from(byDate.values());
+  if (rows.length === 0) return;
+
+  // ✅ FIX 5 : log explicite si toutes les métriques sont à 0 (utile pour debug)
+  const allZero = rows.every(r =>
+    !r.impressions && !r.video_views && !r.clicks && !r.engaged_users && !r.reactions_total
+  );
+  if (allZero) {
+    console.warn(`[syncPagePostMetrics] post ${post_id} : toutes les métriques sont à 0. ` +
+      `Vérifie que le token a la permission read_insights et que la page n'est pas en "new Pages experience" ` +
+      `(certaines métriques nécessitent pages_read_engagement + Page Public Content Access).`);
+  }
+
   await supabaseUpsert("meta_page_post_metrics_daily", rows, "owner_id,provider,page_id,post_id,date_start,date_stop");
   inc(counters, "page_post_metric_rows_synced", rows.length);
 }
