@@ -1762,61 +1762,127 @@ async function syncOrganicForPages(owner_id: string, pages: any[], counters: Syn
   }
 }
 
-async function syncPagePostMetrics(owner_id: string, page_id: string, post_id: string, pageToken: string, counters: SyncCounters) {
-const metrics = [
-  "post_total_media_view_unique",
-  "post_clicks",
-  "post_reactions_by_type_total",
-  "post_video_views",
-  "post_video_avg_time_watched",
-  "post_video_complete_views_organic",
-  "post_video_views_organic",
-  "post_video_views_autoplayed",
-  "post_video_views_clicked_to_play",
-  "post_video_retention_graph",
-].join(",");
-  const json = await graphGetSafe(`page_post_metrics_${post_id}`, `${post_id}/insights`, pageToken, { metric: metrics, period: "day" });
-  if (!json?.data) return;
+async function syncPagePostMetrics(
+  owner_id: string,
+  page_id: string,
+  post_id: string,
+  pageToken: string,
+  counters: SyncCounters
+) {
+  const metrics = [
+    "post_total_media_view_unique",
+    "post_clicks",
+    "post_reactions_by_type_total",
+    "post_video_views",
+    "post_video_avg_time_watched",
+    "post_video_complete_views_organic",
+    "post_video_views_organic",
+    "post_video_views_autoplayed",
+    "post_video_views_clicked_to_play",
+    "post_video_retention_graph",
+  ].join(",");
 
-  const byDate = new Map<string, Json>();
-
-  for (const metric of asArray(json.data)) {
-    for (const v of asArray(metric.values)) {
-      const endDate = String(v.end_time || todayISODate()).slice(0, 10);
-      const row = byDate.get(endDate) || {
-        owner_id,
-        provider: "facebook",
-        page_id,
-        post_id,
-        date_start: endDate,
-        date_stop: endDate,
-        raw: {},
-        fetched_at: new Date().toISOString(),
-      };
-
-      row.raw[metric.name] = v;
-      const value = v.value;
-
-      if (metric.name === "post_impressions") row.impressions = toBigIntNumber(value, 0);
-      if (metric.name === "post_total_media_view_unique") row.impressions_unique = toBigIntNumber(value, 0);
-      if (metric.name === "post_engaged_users") row.engaged_users = toBigIntNumber(value, 0);
-      if (metric.name === "post_clicks") row.clicks = toBigIntNumber(value, 0);
-      if (metric.name === "post_video_views") row.video_views = toBigIntNumber(value, 0);
-      if (metric.name === "post_video_avg_time_watched") row.video_avg_time_watched = toNumber(value, null);
-      if (metric.name === "post_negative_feedback") row.negative_feedback = toBigIntNumber(value, 0);
-      if (metric.name === "post_reactions_by_type_total") {
-        const obj = asObject(value);
-        row.reactions_total = Object.values(obj).reduce((sum: number, n: any) => sum + (toNumber(n, 0) || 0), 0);
-        row.likes_count = toBigIntNumber(obj.like, 0) || null;
+  const [postSummary, lifetimeJson] = await Promise.all([
+    graphGetSafe(
+      `page_post_summary_${post_id}`,
+      post_id,
+      pageToken,
+      {
+        fields: [
+          "id",
+          "created_time",
+          "reactions.limit(0).summary(true)",
+          "comments.limit(0).summary(true)",
+          "shares",
+        ].join(","),
       }
+    ),
 
-      byDate.set(endDate, row);
+    graphGetSafe(
+      `page_post_lifetime_metrics_${post_id}`,
+      `${post_id}/insights`,
+      pageToken,
+      {
+        metric: metrics,
+        period: "lifetime",
+      }
+    ),
+  ]);
+
+  const row: Json = {
+    owner_id,
+    provider: "facebook",
+    page_id,
+    post_id,
+    post_created_time: safeMetaTime(postSummary?.created_time),
+    snapshot_at: new Date().toISOString(),
+
+    reactions_total: postSummary?.reactions?.summary?.total_count ?? null,
+    comments_total: postSummary?.comments?.summary?.total_count ?? null,
+    shares_total: postSummary?.shares?.count ?? null,
+
+    reactions_by_type: {},
+    video_retention_graph: {},
+
+    raw_post_summary: postSummary ?? {},
+    raw_insights: lifetimeJson ?? {},
+  };
+
+  for (const metric of asArray(lifetimeJson?.data)) {
+    const value = metric.values?.[0]?.value ?? null;
+
+    if (metric.name === "post_total_media_view_unique") {
+      row.post_total_media_view_unique = toBigIntNumber(value, 0);
+    }
+
+    if (metric.name === "post_clicks") {
+      row.post_clicks = toBigIntNumber(value, 0);
+    }
+
+    if (metric.name === "post_reactions_by_type_total") {
+      const obj = asObject(value);
+      row.reactions_by_type = obj;
+
+      if (row.reactions_total === null) {
+        row.reactions_total = Object.values(obj).reduce(
+          (sum: number, n: any) => sum + (toNumber(n, 0) || 0),
+          0
+        );
+      }
+    }
+
+    if (metric.name === "post_video_views") {
+      row.video_views = toBigIntNumber(value, 0);
+    }
+
+    if (metric.name === "post_video_avg_time_watched") {
+      row.video_avg_time_watched = toNumber(value, null);
+    }
+
+    if (metric.name === "post_video_complete_views_organic") {
+      row.video_complete_views_organic = toBigIntNumber(value, 0);
+    }
+
+    if (metric.name === "post_video_views_organic") {
+      row.video_views_organic = toBigIntNumber(value, 0);
+    }
+
+    if (metric.name === "post_video_views_autoplayed") {
+      row.video_views_autoplayed = toBigIntNumber(value, 0);
+    }
+
+    if (metric.name === "post_video_views_clicked_to_play") {
+      row.video_views_clicked_to_play = toBigIntNumber(value, 0);
+    }
+
+    if (metric.name === "post_video_retention_graph") {
+      row.video_retention_graph = asObject(value);
     }
   }
 
-  const rows = Array.from(byDate.values());
-  await supabaseUpsert("meta_page_post_metrics_daily", rows, "owner_id,provider,page_id,post_id,date_start,date_stop");
-  inc(counters, "page_post_metric_rows_synced", rows.length);
+  await supabaseInsert("meta_page_post_metric_snapshots", [row]);
+
+  inc(counters, "page_post_metric_snapshots_synced");
 }
 
 async function syncInstagramMediaMetrics(owner_id: string, ig_user_id: string, media_id: string, pageToken: string, counters: SyncCounters) {
