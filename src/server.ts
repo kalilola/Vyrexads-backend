@@ -2509,6 +2509,9 @@ app.post("/api/meta/debug/post-insights", requireAuth, async (req, res) => {
     if (!page_id) return res.status(400).json({ ok: false, error: "Missing page_id" });
     if (!post_id) return res.status(400).json({ ok: false, error: "Missing post_id" });
 
+    const since = String(req.body?.since || "").trim();
+    const until = String(req.body?.until || "").trim();
+
     const metrics: string[] = Array.isArray(req.body?.metrics) && req.body.metrics.length
       ? req.body.metrics.map(String)
       : [
@@ -2524,26 +2527,43 @@ app.post("/api/meta/debug/post-insights", requireAuth, async (req, res) => {
           "post_video_retention_graph",
         ];
 
-    const periods: string[] = Array.isArray(req.body?.periods) && req.body.periods.length
-      ? req.body.periods.map(String)
-      : ["day", "lifetime"];
-
     const pageToken = await getFacebookPageAccessToken(owner_id, page_id);
+
+    const postSummary = await graphGet(post_id, pageToken, {
+      fields: [
+        "id",
+        "message",
+        "created_time",
+        "permalink_url",
+        "reactions.limit(0).summary(true)",
+        "comments.limit(0).summary(true)",
+        "shares",
+      ].join(","),
+    });
 
     const results: any[] = [];
 
-    for (const period of periods) {
-      for (const metric of metrics) {
+    for (const metric of metrics) {
+      for (const period of ["day", "lifetime"]) {
         try {
-          const json = await graphGet(`${post_id}/insights`, pageToken, {
+          const query: any = {
             metric,
             period,
-          });
+          };
+
+          // On applique la fenêtre uniquement sur period=day
+          if (period === "day" && since && until) {
+            query.since = since;
+            query.until = until;
+          }
+
+          const json = await graphGet(`${post_id}/insights`, pageToken, query);
 
           results.push({
             period,
             metric,
             ok: true,
+            query,
             data_count: Array.isArray(json?.data) ? json.data.length : 0,
             data: json?.data ?? null,
             raw: json,
@@ -2553,6 +2573,11 @@ app.post("/api/meta/debug/post-insights", requireAuth, async (req, res) => {
             period,
             metric,
             ok: false,
+            query: {
+              metric,
+              period,
+              ...(period === "day" && since && until ? { since, until } : {}),
+            },
             error: e?.message || String(e),
           });
         }
@@ -2564,8 +2589,16 @@ app.post("/api/meta/debug/post-insights", requireAuth, async (req, res) => {
       owner_id,
       page_id,
       post_id,
-      tested_metrics: metrics,
-      tested_periods: periods,
+      since,
+      until,
+      post_summary: {
+        created_time: postSummary?.created_time ?? null,
+        reactions_total: postSummary?.reactions?.summary?.total_count ?? null,
+        comments_total: postSummary?.comments?.summary?.total_count ?? null,
+        shares_total: postSummary?.shares?.count ?? null,
+        permalink_url: postSummary?.permalink_url ?? null,
+      },
+      post_summary_raw: postSummary,
       results,
     });
   } catch (e: any) {
@@ -2575,7 +2608,6 @@ app.post("/api/meta/debug/post-insights", requireAuth, async (req, res) => {
     });
   }
 });
-
 // =========================================================
 // ROUTES - SYNC SEPARATED
 // =========================================================
