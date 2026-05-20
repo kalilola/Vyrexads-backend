@@ -2493,6 +2493,89 @@ app.post(["/api/meta/debug/ad-accounts", "/api/facebook/debug/ad-accounts"], req
   }
 });
 
+
+
+
+//==========================================================
+// Test routes insights
+//==========================================================
+app.post("/api/meta/debug/post-insights", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "").trim();
+    const page_id = String(req.body?.page_id || "").trim();
+    const post_id = String(req.body?.post_id || "").trim();
+
+    if (!owner_id) return res.status(400).json({ ok: false, error: "Missing owner_id" });
+    if (!page_id) return res.status(400).json({ ok: false, error: "Missing page_id" });
+    if (!post_id) return res.status(400).json({ ok: false, error: "Missing post_id" });
+
+    const metrics: string[] = Array.isArray(req.body?.metrics) && req.body.metrics.length
+      ? req.body.metrics.map(String)
+      : [
+          "post_total_media_view_unique",
+          "post_clicks",
+          "post_reactions_by_type_total",
+          "post_video_views",
+          "post_video_avg_time_watched",
+          "post_video_complete_views_organic",
+          "post_video_views_organic",
+          "post_video_views_autoplayed",
+          "post_video_views_clicked_to_play",
+          "post_video_retention_graph",
+        ];
+
+    const periods: string[] = Array.isArray(req.body?.periods) && req.body.periods.length
+      ? req.body.periods.map(String)
+      : ["day", "lifetime"];
+
+    const pageToken = await getFacebookPageAccessToken(owner_id, page_id);
+
+    const results: any[] = [];
+
+    for (const period of periods) {
+      for (const metric of metrics) {
+        try {
+          const json = await graphGet(`${post_id}/insights`, pageToken, {
+            metric,
+            period,
+          });
+
+          results.push({
+            period,
+            metric,
+            ok: true,
+            data_count: Array.isArray(json?.data) ? json.data.length : 0,
+            data: json?.data ?? null,
+            raw: json,
+          });
+        } catch (e: any) {
+          results.push({
+            period,
+            metric,
+            ok: false,
+            error: e?.message || String(e),
+          });
+        }
+      }
+    }
+
+    return res.json({
+      ok: true,
+      owner_id,
+      page_id,
+      post_id,
+      tested_metrics: metrics,
+      tested_periods: periods,
+      results,
+    });
+  } catch (e: any) {
+    return res.status(500).json({
+      ok: false,
+      error: e?.message || String(e),
+    });
+  }
+});
+
 // =========================================================
 // ROUTES - SYNC SEPARATED
 // =========================================================
