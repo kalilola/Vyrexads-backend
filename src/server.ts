@@ -685,6 +685,63 @@ async function getFacebookPageAccessToken(owner_id: string, page_id: string) {
 // META GRAPH HELPERS
 // =========================================================
 
+
+
+function toBigIntOrNull(value: any) {
+  const parsed = toNumber(value, null);
+  return parsed === null ? null : Math.trunc(parsed);
+}
+
+function getMetricValue(insights: any, name: string) {
+  const metric = asArray(insights?.data).find((m) => m?.name === name);
+  return metric?.values?.[0]?.value ?? null;
+}
+
+function detectFacebookPublicationType(post: any) {
+  const type = String(post?.type || "").toLowerCase();
+  const statusType = String(post?.status_type || "").toLowerCase();
+  const attachments = asArray(post?.attachments?.data);
+  const firstAttachment = attachments[0] || {};
+  const mediaType = String(firstAttachment?.media_type || "").toLowerCase();
+  const attachmentType = String(firstAttachment?.type || "").toLowerCase();
+
+  if (
+    type.includes("video") ||
+    statusType.includes("video") ||
+    mediaType.includes("video") ||
+    attachmentType.includes("video")
+  ) {
+    return "video";
+  }
+
+  if (
+    type.includes("photo") ||
+    statusType.includes("photo") ||
+    mediaType.includes("photo") ||
+    attachmentType.includes("photo") ||
+    post?.full_picture
+  ) {
+    return "image";
+  }
+
+  if (
+    type.includes("link") ||
+    statusType.includes("link") ||
+    attachmentType.includes("share") ||
+    firstAttachment?.url
+  ) {
+    return "link";
+  }
+
+  if (post?.message || post?.story) {
+    return "text";
+  }
+
+  return "unknown";
+}
+
+
+
 async function fetchJsonWithRetry(url: string, retries = 3): Promise<any> {
   let lastText = "";
 
@@ -948,8 +1005,10 @@ const PAGE_POST_FIELDS = [
   "created_time",
   "permalink_url",
   "full_picture",
+  "type",
   "status_type",
   "is_published",
+  "attachments{media_type,type,url,target,media,subattachments{media_type,type,url,target,media}}",
 ].join(",");
 
 const IG_ACCOUNT_FIELDS = [
@@ -1762,6 +1821,7 @@ async function syncOrganicForPages(owner_id: string, pages: any[], counters: Syn
   }
 }
 
+
 async function syncPagePostMetrics(
   owner_id: string,
   page_id: string,
@@ -1790,7 +1850,14 @@ async function syncPagePostMetrics(
       {
         fields: [
           "id",
+          "message",
+          "story",
           "created_time",
+          "permalink_url",
+          "full_picture",
+          "type",
+          "status_type",
+          "attachments{media_type,type,url,target,media,subattachments{media_type,type,url,target,media}}",
           "reactions.limit(0).summary(true)",
           "comments.limit(0).summary(true)",
           "shares",
@@ -1816,6 +1883,7 @@ async function syncPagePostMetrics(
     post_id,
     post_created_time: safeMetaTime(postSummary?.created_time),
     snapshot_at: new Date().toISOString(),
+    type_publication: detectFacebookPublicationType(postSummary),
 
     reactions_total: postSummary?.reactions?.summary?.total_count ?? null,
     comments_total: postSummary?.comments?.summary?.total_count ?? null,
@@ -1828,15 +1896,13 @@ async function syncPagePostMetrics(
     raw_insights: lifetimeJson ?? {},
   };
 
+  //ne mets pas 0 quand la métrique est absente. 0 doit vouloir dire “Meta a vraiment renvoyé 0”, pas “métrique non disponible”. 
+
   for (const metric of asArray(lifetimeJson?.data)) {
     const value = metric.values?.[0]?.value ?? null;
 
-    if (metric.name === "post_total_media_view_unique") {
-      row.post_total_media_view_unique = toBigIntNumber(value, 0);
-    }
-
-    if (metric.name === "post_clicks") {
-      row.post_clicks = toBigIntNumber(value, 0);
+    if (row.type_publication !== "video") {
+      row.metrics_note = "Les métriques vidéo peuvent être nulles ou à 0 car la publication n’est pas détectée comme vidéo.";
     }
 
     if (metric.name === "post_reactions_by_type_total") {
@@ -1851,8 +1917,17 @@ async function syncPagePostMetrics(
       }
     }
 
+
+    if (metric.name === "post_total_media_view_unique") {
+      row.post_total_media_view_unique = toBigIntOrNull(value);
+    }
+
+    if (metric.name === "post_clicks") {
+      row.post_clicks = toBigIntOrNull(value);
+    }
+
     if (metric.name === "post_video_views") {
-      row.video_views = toBigIntNumber(value, 0);
+      row.video_views = toBigIntOrNull(value);
     }
 
     if (metric.name === "post_video_avg_time_watched") {
@@ -1860,19 +1935,19 @@ async function syncPagePostMetrics(
     }
 
     if (metric.name === "post_video_complete_views_organic") {
-      row.video_complete_views_organic = toBigIntNumber(value, 0);
+      row.video_complete_views_organic = toBigIntOrNull(value);
     }
 
     if (metric.name === "post_video_views_organic") {
-      row.video_views_organic = toBigIntNumber(value, 0);
+      row.video_views_organic = toBigIntOrNull(value);
     }
 
     if (metric.name === "post_video_views_autoplayed") {
-      row.video_views_autoplayed = toBigIntNumber(value, 0);
+      row.video_views_autoplayed = toBigIntOrNull(value);
     }
 
     if (metric.name === "post_video_views_clicked_to_play") {
-      row.video_views_clicked_to_play = toBigIntNumber(value, 0);
+      row.video_views_clicked_to_play = toBigIntOrNull(value);
     }
 
     if (metric.name === "post_video_retention_graph") {
