@@ -2750,6 +2750,63 @@ app.post("/api/meta/debug/post-insights", requireAuth, async (req, res) => {
   }
 });
 // =========================================================
+// test page posts routes 
+// =========================================================
+app.post("/api/meta/debug/page-posts", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "").trim();
+    const page_id = String(req.body?.page_id || "").trim();
+
+    if (!owner_id) return res.status(400).json({ ok: false, error: "Missing owner_id" });
+    if (!page_id) return res.status(400).json({ ok: false, error: "Missing page_id" });
+
+    const pageToken = await getFacebookPageAccessToken(owner_id, page_id);
+
+    const [posts, publishedPosts, feed] = await Promise.all([
+      graphGetAllSafe(
+        `debug_posts_${page_id}`,
+        `${page_id}/posts`,
+        pageToken,
+        { fields: PAGE_POST_FIELDS, limit: 25 },
+        5
+      ),
+      graphGetAllSafe(
+        `debug_published_posts_${page_id}`,
+        `${page_id}/published_posts`,
+        pageToken,
+        { fields: PAGE_POST_FIELDS, limit: 25 },
+        5
+      ),
+      graphGetAllSafe(
+        `debug_feed_${page_id}`,
+        `${page_id}/feed`,
+        pageToken,
+        { fields: PAGE_POST_FIELDS, limit: 25 },
+        5
+      ),
+    ]);
+
+    return res.json({
+      ok: true,
+      page_id,
+      counts: {
+        posts: posts.length,
+        published_posts: publishedPosts.length,
+        feed: feed.length,
+      },
+      samples: {
+        posts: posts.slice(0, 5),
+        published_posts: publishedPosts.slice(0, 5),
+        feed: feed.slice(0, 5),
+      },
+    });
+  } catch (e: any) {
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+
+// =========================================================
 // ROUTES - SYNC SEPARATED
 // =========================================================
 
