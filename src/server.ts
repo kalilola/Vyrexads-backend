@@ -1002,6 +1002,7 @@ const PAGE_POST_FIELDS = [
   "id",
   "message",
   "created_time",
+  "permalink_url",
 ].join(",");
 
 const IG_ACCOUNT_FIELDS = [
