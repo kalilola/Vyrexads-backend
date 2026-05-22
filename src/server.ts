@@ -1856,7 +1856,6 @@ async function syncPagePostMetrics(
           "full_picture",
           "type",
           "status_type",
-          "attachments{media_type,type,url,target,media,subattachments{media_type,type,url,target,media}}",
           "reactions.limit(0).summary(true)",
           "comments.limit(0).summary(true)",
           "shares",
