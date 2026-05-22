@@ -1005,6 +1005,7 @@ const PAGE_POST_FIELDS = [
   "permalink_url",
   "story",
   "status_type",
+  "is_published",
 ].join(",");
 
 const IG_ACCOUNT_FIELDS = [
