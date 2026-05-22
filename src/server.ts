@@ -1008,7 +1008,6 @@ const PAGE_POST_FIELDS = [
   "type",
   "status_type",
   "is_published",
-  "attachments{media_type,type,url,target,media,subattachments{media_type,type,url,target,media}}",
 ].join(",");
 
 const IG_ACCOUNT_FIELDS = [
