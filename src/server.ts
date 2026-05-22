@@ -1001,12 +1001,7 @@ const PAGE_FIELDS = [
 const PAGE_POST_FIELDS = [
   "id",
   "message",
-  "story",
   "created_time",
-  "permalink_url",
-  "type",
-  "status_type",
-  "is_published",
 ].join(",");
 
 const IG_ACCOUNT_FIELDS = [
