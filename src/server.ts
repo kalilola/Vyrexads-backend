@@ -1851,7 +1851,6 @@ async function syncPagePostMetrics(
           "story",
           "created_time",
           "permalink_url",
-          "type",
           "status_type",
           "reactions.limit(0).summary(true)",
           "comments.limit(0).summary(true)",
