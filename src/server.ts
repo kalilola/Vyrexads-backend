@@ -2495,6 +2495,7 @@ app.get("/health", (_req, res) => {
     ok: true,
     service: "vyrexads-merged-marketing-server",
     graph_version: META_GRAPH_VERSION,
+    build_test: "TEST_RENDER_2026_05_22_A",
     time: new Date().toISOString(),
   });
 });
