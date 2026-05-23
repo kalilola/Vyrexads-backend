@@ -1835,10 +1835,6 @@ async function syncPagePostMetrics(
     "post_impressions_paid_unique",
     "post_impressions_viral",
     "post_impressions_viral_unique",
-
-    "post_total_media_view_unique",
-    "post_clicks",
-    "post_reactions_by_type_total",
   ].join(",");
 
   const [postSummary, lifetimeJson] = await Promise.all([
