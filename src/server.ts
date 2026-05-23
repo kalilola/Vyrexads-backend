@@ -1957,7 +1957,41 @@ async function syncPagePostMetrics(
     if (metric.name === "post_video_retention_graph") {
       row.video_retention_graph = asObject(value);
     }
+
+    if (metric.name === "post_impressions") {
+      row.post_impressions = toBigIntOrNull(value);
+    }
+
+    if (metric.name === "post_impressions_unique") {
+      row.post_impressions_unique = toBigIntOrNull(value);
+    }
+
+    if (metric.name === "post_impressions_organic") {
+      row.post_impressions_organic = toBigIntOrNull(value);
+    }
+
+    if (metric.name === "post_impressions_organic_unique") {
+      row.post_impressions_organic_unique = toBigIntOrNull(value);
+    }
+
+    if (metric.name === "post_impressions_paid") {
+      row.post_impressions_paid = toBigIntOrNull(value);
+    }
+
+    if (metric.name === "post_impressions_paid_unique") {
+      row.post_impressions_paid_unique = toBigIntOrNull(value);
+    }
+
+    if (metric.name === "post_impressions_viral") {
+      row.post_impressions_viral = toBigIntOrNull(value);
+    }
+
+    if (metric.name === "post_impressions_viral_unique") {
+      row.post_impressions_viral_unique = toBigIntOrNull(value);
+    }
   }
+
+  
 
   await supabaseInsert("meta_page_post_metric_snapshots", [row]);
 
