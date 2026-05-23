@@ -1839,14 +1839,6 @@ async function syncPagePostMetrics(
     "post_total_media_view_unique",
     "post_clicks",
     "post_reactions_by_type_total",
-
-    "post_video_views",
-    "post_video_avg_time_watched",
-    "post_video_complete_views_organic",
-    "post_video_views_organic",
-    "post_video_views_autoplayed",
-    "post_video_views_clicked_to_play",
-    "post_video_retention_graph",
   ].join(",");
 
   const [postSummary, lifetimeJson] = await Promise.all([
