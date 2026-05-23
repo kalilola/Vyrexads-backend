@@ -1827,9 +1827,19 @@ async function syncPagePostMetrics(
   counters: SyncCounters
 ) {
   const metrics = [
+    "post_impressions",
+    "post_impressions_unique",
+    "post_impressions_organic",
+    "post_impressions_organic_unique",
+    "post_impressions_paid",
+    "post_impressions_paid_unique",
+    "post_impressions_viral",
+    "post_impressions_viral_unique",
+
     "post_total_media_view_unique",
     "post_clicks",
     "post_reactions_by_type_total",
+
     "post_video_views",
     "post_video_avg_time_watched",
     "post_video_complete_views_organic",
