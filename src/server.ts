@@ -2776,6 +2776,83 @@ app.post("/api/meta/debug/post-insights", requireAuth, async (req, res) => {
     });
   }
 });
+
+
+
+app.post("/api/meta/debug/post-metrics-matrix", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "").trim();
+    const page_id = String(req.body?.page_id || "").trim();
+    const post_ids = Array.isArray(req.body?.post_ids) ? req.body.post_ids.map(String) : [];
+
+    if (!owner_id) return res.status(400).json({ ok: false, error: "Missing owner_id" });
+    if (!page_id) return res.status(400).json({ ok: false, error: "Missing page_id" });
+    if (!post_ids.length) return res.status(400).json({ ok: false, error: "Missing post_ids" });
+
+    const metrics = [
+      "post_impressions",
+      "post_impressions_unique",
+      "post_impressions_organic",
+      "post_impressions_organic_unique",
+      "post_impressions_paid",
+      "post_impressions_paid_unique",
+      "post_impressions_viral",
+      "post_impressions_viral_unique",
+      "post_total_media_view_unique",
+      "post_clicks",
+      "post_reactions_by_type_total",
+      "post_video_views",
+      "post_video_avg_time_watched",
+      "post_video_complete_views_organic",
+      "post_video_views_organic",
+      "post_video_views_autoplayed",
+      "post_video_views_clicked_to_play",
+      "post_video_retention_graph",
+    ];
+
+    const pageToken = await getFacebookPageAccessToken(owner_id, page_id);
+    const results: any[] = [];
+
+    for (const post_id of post_ids) {
+      const summary = await graphGetSafe(`debug_summary_${post_id}`, post_id, pageToken, {
+        fields: "id,created_time,status_type,permalink_url",
+      });
+
+      for (const metric of metrics) {
+        try {
+          const json = await graphGet(`${post_id}/insights`, pageToken, {
+            metric,
+            period: "lifetime",
+          });
+
+          console.log(`[meta][metric-ok] post=${post_id} status_type=${summary?.status_type || "unknown"} metric=${metric}`);
+
+          results.push({
+            post_id,
+            status_type: summary?.status_type ?? null,
+            metric,
+            ok: true,
+            value: json?.data?.[0]?.values?.[0]?.value ?? null,
+          });
+        } catch (e: any) {
+          console.warn(`[meta][metric-fail] post=${post_id} status_type=${summary?.status_type || "unknown"} metric=${metric} error=${e?.message || String(e)}`);
+
+          results.push({
+            post_id,
+            status_type: summary?.status_type ?? null,
+            metric,
+            ok: false,
+            error: e?.message || String(e),
+          });
+        }
+      }
+    }
+
+    return res.json({ ok: true, tested_posts: post_ids.length, results });
+  } catch (e: any) {
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
 // =========================================================
 // test page posts routes 
 // =========================================================
