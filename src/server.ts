@@ -1826,15 +1826,24 @@ async function syncPagePostMetrics(
   pageToken: string,
   counters: SyncCounters
 ) {
+
   const metrics = [
-    "post_impressions",
     "post_impressions_unique",
-    "post_impressions_organic",
     "post_impressions_organic_unique",
-    "post_impressions_paid",
     "post_impressions_paid_unique",
-    "post_impressions_viral",
     "post_impressions_viral_unique",
+
+    "post_total_media_view_unique",
+    "post_clicks",
+    "post_reactions_by_type_total",
+
+    "post_video_views",
+    "post_video_avg_time_watched",
+    "post_video_complete_views_organic",
+    "post_video_views_organic",
+    "post_video_views_autoplayed",
+    "post_video_views_clicked_to_play",
+    "post_video_retention_graph",
   ].join(",");
 
   const [postSummary, lifetimeJson] = await Promise.all([
@@ -1909,7 +1918,6 @@ async function syncPagePostMetrics(
       }
     }
 
-
     if (metric.name === "post_total_media_view_unique") {
       row.post_total_media_view_unique = toBigIntOrNull(value);
     }
@@ -1946,37 +1954,22 @@ async function syncPagePostMetrics(
       row.video_retention_graph = asObject(value);
     }
 
-    if (metric.name === "post_impressions") {
-      row.post_impressions = toBigIntOrNull(value);
-    }
-
     if (metric.name === "post_impressions_unique") {
       row.post_impressions_unique = toBigIntOrNull(value);
-    }
-
-    if (metric.name === "post_impressions_organic") {
-      row.post_impressions_organic = toBigIntOrNull(value);
     }
 
     if (metric.name === "post_impressions_organic_unique") {
       row.post_impressions_organic_unique = toBigIntOrNull(value);
     }
 
-    if (metric.name === "post_impressions_paid") {
-      row.post_impressions_paid = toBigIntOrNull(value);
-    }
-
     if (metric.name === "post_impressions_paid_unique") {
       row.post_impressions_paid_unique = toBigIntOrNull(value);
-    }
-
-    if (metric.name === "post_impressions_viral") {
-      row.post_impressions_viral = toBigIntOrNull(value);
     }
 
     if (metric.name === "post_impressions_viral_unique") {
       row.post_impressions_viral_unique = toBigIntOrNull(value);
     }
+
   }
 
   
@@ -2777,7 +2770,9 @@ app.post("/api/meta/debug/post-insights", requireAuth, async (req, res) => {
   }
 });
 
-
+//==========================================================
+// Test mtrics imprestion individuelement 
+//==========================================================
 
 app.post("/api/meta/debug/post-metrics-matrix", requireAuth, async (req, res) => {
   try {
