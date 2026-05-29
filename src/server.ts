@@ -2213,6 +2213,10 @@ async function syncPagePostDailyMetricsTest(params: {
     params.post_id,
     params.pageToken,
     {
+      // TEST daily :
+      // On évite volontairement les champs Meta problématiques/dépréciés.
+      // Le champ "type" peut déclencher :
+      // (#12) deprecate_post_aggregated_fields_for_attachement
       fields: [
         "id",
         "message",
@@ -2220,7 +2224,6 @@ async function syncPagePostDailyMetricsTest(params: {
         "created_time",
         "permalink_url",
         "status_type",
-        "type",
       ].join(","),
     }
   );
