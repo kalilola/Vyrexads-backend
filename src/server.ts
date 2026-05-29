@@ -2284,9 +2284,11 @@ async function syncPagePostDailyMetricsTest(params: {
   }));
 
   if (rows.length) {
-    // TEST uniquement : insert simple pour éviter les erreurs de contrainte unique
-    // sur l'ancienne table daily.
-    await supabaseInsert(TEST_META_PAGE_POST_DAILY_TABLE, rows);
+    await supabaseUpsert(
+      TEST_META_PAGE_POST_DAILY_TABLE,
+      rows,
+      "owner_id,provider,page_id,post_id,date_start,date_stop"
+    );
   }
 
   return {
