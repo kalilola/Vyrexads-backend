@@ -1999,30 +1999,32 @@ async function syncPagePostMetrics(
 
 const TEST_META_PAGE_POST_DAILY_TABLE = "meta_page_post_metrics_daily";
 
+// TEST post-level daily.
+// On retire volontairement les métriques invalides en period=day :
+// - post_impressions
+// - post_impressions_organic
+// - post_impressions_paid
+// - post_impressions_viral
+//
+// Elles renvoient (#100) The value must be a valid insights metric.
 const TEST_PAGE_POST_DAILY_METRICS = [
-  // Impressions
-  "post_impressions",
   "post_impressions_unique",
-  "post_impressions_organic",
   "post_impressions_organic_unique",
-  "post_impressions_paid",
   "post_impressions_paid_unique",
-  "post_impressions_viral",
   "post_impressions_viral_unique",
 
-  // Engagement / vues média
   "post_total_media_view_unique",
   "post_clicks",
   "post_reactions_by_type_total",
 
-  // Vidéo
+  // Gardées uniquement pour test, mais les zéros ne sont pas fiables
+  // si la date renvoyée est avant post_created_time.
   "post_video_views",
   "post_video_avg_time_watched",
   "post_video_complete_views_organic",
   "post_video_views_organic",
   "post_video_views_autoplayed",
   "post_video_views_clicked_to_play",
-  "post_video_retention_graph",
 ];
 
 function metaDailyDateFromEndTime(endTime: any) {
@@ -2037,6 +2039,23 @@ function metaDailyDateFromEndTime(endTime: any) {
   const d = new Date(parsed);
   d.setUTCDate(d.getUTCDate() - 1);
   return d.toISOString().slice(0, 10);
+}
+
+function isoDateOnly(value: any) {
+  const safe = safeMetaTime(value);
+  return safe ? safe.slice(0, 10) : null;
+}
+
+function isBeforeISODate(date: string, minDate: string | null) {
+  if (!minDate) return false;
+  return date < minDate;
+}
+
+function extractVideoIdFromFacebookPermalink(permalinkUrl: any) {
+  if (!permalinkUrl || typeof permalinkUrl !== "string") return null;
+
+  const match = permalinkUrl.match(/\/videos\/(\d+)/);
+  return match?.[1] || null;
 }
 
 function getOrCreateDailyPostMetricRow(params: {
@@ -2228,18 +2247,23 @@ async function syncPagePostDailyMetricsTest(params: {
     }
   );
 
-  for (const metricName of metrics) {
-    try {
-      const json = await graphGet(
-        `${params.post_id}/insights`,
-        params.pageToken,
-        {
-          metric: metricName,
-          period: "day",
-          since: params.since,
-          until: params.until,
-        }
-      );
+  const postCreatedDate = isoDateOnly(postSummary?.created_time);
+  const videoIdFromPermalink = extractVideoIdFromFacebookPermalink(
+    postSummary?.permalink_url
+  );
+
+    for (const metricName of metrics) {
+      try {
+        const json = await graphGet(
+          `${params.post_id}/insights`,
+          params.pageToken,
+          {
+            metric: metricName,
+            period: "day",
+            since: params.since,
+            until: params.until,
+          }
+        );
 
       const metricData = asArray(json?.data)[0];
       const values = asArray(metricData?.values);
@@ -2247,6 +2271,23 @@ async function syncPagePostDailyMetricsTest(params: {
       for (const item of values) {
         const date = metaDailyDateFromEndTime(item?.end_time);
         const value = item?.value ?? null;
+
+        // Sécurité importante :
+        // Si Meta renvoie une ligne daily avant la date de publication,
+        // on la considère comme invalide.
+        // Exemple réel : post créé le 2019-01-18 mais Meta renvoie 0 le 2019-01-10.
+        if (isBeforeISODate(date, postCreatedDate)) {
+          metricErrors.push({
+            metric: metricName,
+            skipped: true,
+            reason: "metric_date_before_post_created_time",
+            date,
+            post_created_date: postCreatedDate,
+            value,
+            end_time: item?.end_time ?? null,
+          });
+          continue;
+        }
 
         const row = getOrCreateDailyPostMetricRow({
           rowsByDate,
@@ -2291,10 +2332,64 @@ async function syncPagePostDailyMetricsTest(params: {
     );
   }
 
+  // TEST vidéo object-level :
+  // Si le post est une vidéo, les vraies métriques vidéo peuvent être portées
+  // par l'objet vidéo lui-même, pas par le post container.
+  let videoObjectTest: Json | null = null;
+
+  if (videoIdFromPermalink) {
+    const videoMetricNames = [
+      "total_video_views",
+      "total_video_views_unique",
+      "total_video_impressions",
+      "total_video_impressions_unique",
+      "total_video_avg_time_watched",
+      "total_video_complete_views",
+      "total_video_10s_views",
+      "total_video_retention_graph",
+    ];
+
+    const videoMetricResults: Json = {};
+    const videoMetricErrors: Json[] = [];
+
+    for (const videoMetricName of videoMetricNames) {
+      try {
+        const videoJson = await graphGet(
+          `${videoIdFromPermalink}/video_insights`,
+          params.pageToken,
+          {
+            metric: videoMetricName,
+            period: "day",
+            since: params.since,
+            until: params.until,
+          }
+        );
+
+        videoMetricResults[videoMetricName] = videoJson;
+      } catch (e: any) {
+        videoMetricErrors.push({
+          metric: videoMetricName,
+          error: e?.message || String(e),
+        });
+      }
+    }
+
+    videoObjectTest = {
+      video_id: videoIdFromPermalink,
+      endpoint_tested: `${videoIdFromPermalink}/video_insights`,
+      period: "day",
+      metrics: videoMetricResults,
+      metric_errors: videoMetricErrors,
+    };
+  }
+
   return {
     post_id: params.post_id,
+    post_created_date: postCreatedDate,
+    video_id_from_permalink: videoIdFromPermalink,
     rows_saved: rows.length,
     metric_errors: metricErrors,
+    video_object_test: videoObjectTest,
     sample_rows: rows.slice(0, 3),
   };
 }
