@@ -2569,14 +2569,20 @@ app.post("/api/screenshot", requireAuth, async (req, res) => {
 
     await page.waitForTimeout(3000);
 
-    const screenshot = await page.screenshot({
-      fullPage: true,
-      type: "png",
-      timeout: 120_000,
+    await page.evaluate(() => {
+      window.scrollTo(0, 0);
+      document.fonts.ready.catch(() => null);
     });
 
-    res.setHeader("Content-Type", "image/png");
-    res.setHeader("Content-Disposition", 'inline; filename="screenshot.png"');
+    const screenshot = await page.screenshot({
+      fullPage: false,
+      type: "jpeg",
+      quality: 80,
+      timeout: 60_000,
+    });
+
+    res.setHeader("Content-Type", "image/jpeg");
+    res.setHeader("Content-Disposition", 'inline; filename="screenshot.jpg"');
 
     return res.send(screenshot);
   } catch (e: any) {
