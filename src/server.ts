@@ -6,6 +6,7 @@ import cors from "cors";
 import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 import crypto from "crypto";
+import { chromium } from "playwright";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -1969,6 +1970,7 @@ async function syncPagePostMetrics(
     if (metric.name === "post_impressions_viral_unique") {
       row.post_impressions_viral_unique = toBigIntOrNull(value);
     }
+
   }
 
   
@@ -1977,426 +1979,6 @@ async function syncPagePostMetrics(
 
   inc(counters, "page_post_metric_snapshots_synced");
 }
-
-
-
-// =========================================================
-// TEST - Facebook Page Post Daily Metrics
-// ---------------------------------------------------------
-// Objectif : tester une logique day-by-day pour les posts Facebook.
-// IMPORTANT :
-// - Ne remplace PAS la logique actuelle lifetime.
-// - Ne touche PAS à meta_page_post_metric_snapshots.
-// - Écrit volontairement dans l'ancienne table daily de test :
-//   meta_page_post_metrics_daily
-//
-// Pourquoi :
-// La logique actuelle snapshot prend le lifetime au moment où le contenu
-// est ajouté au SaaS. Si le post avait déjà performé avant, on ne peut pas
-// reconstruire les jours précédents.
-// Ici, on teste donc period="day" pour récupérer une série journalière.
-// =========================================================
-
-const TEST_META_PAGE_POST_DAILY_TABLE = "meta_page_post_metrics_daily";
-
-// TEST post-level daily.
-// On retire volontairement les métriques invalides en period=day :
-// - post_impressions
-// - post_impressions_organic
-// - post_impressions_paid
-// - post_impressions_viral
-//
-// Elles renvoient (#100) The value must be a valid insights metric.
-const TEST_PAGE_POST_DAILY_METRICS = [
-  "post_impressions_unique",
-  "post_impressions_organic_unique",
-  "post_impressions_paid_unique",
-  "post_impressions_viral_unique",
-
-  "post_total_media_view_unique",
-  "post_clicks",
-  "post_reactions_by_type_total",
-
-  // Gardées uniquement pour test, mais les zéros ne sont pas fiables
-  // si la date renvoyée est avant post_created_time.
-  "post_video_views",
-  "post_video_avg_time_watched",
-  "post_video_complete_views_organic",
-  "post_video_views_organic",
-  "post_video_views_autoplayed",
-  "post_video_views_clicked_to_play",
-];
-
-function metaDailyDateFromEndTime(endTime: any) {
-  if (!endTime || typeof endTime !== "string") return todayISODate();
-
-  const parsed = Date.parse(endTime);
-  if (!Number.isFinite(parsed)) return String(endTime).slice(0, 10);
-
-  // Pour les insights period="day", Meta renvoie souvent un end_time
-  // correspondant à la fin de la période. On associe donc la métrique
-  // au jour précédent.
-  const d = new Date(parsed);
-  d.setUTCDate(d.getUTCDate() - 1);
-  return d.toISOString().slice(0, 10);
-}
-
-function isoDateOnly(value: any) {
-  const safe = safeMetaTime(value);
-  return safe ? safe.slice(0, 10) : null;
-}
-
-function isBeforeISODate(date: string, minDate: string | null) {
-  if (!minDate) return false;
-  return date < minDate;
-}
-
-function extractVideoIdFromFacebookPermalink(permalinkUrl: any) {
-  if (!permalinkUrl || typeof permalinkUrl !== "string") return null;
-
-  const match = permalinkUrl.match(/\/videos\/(\d+)/);
-  return match?.[1] || null;
-}
-
-function getOrCreateDailyPostMetricRow(params: {
-  rowsByDate: Map<string, Json>;
-  owner_id: string;
-  page_id: string;
-  post_id: string;
-  postSummary: any;
-  date: string;
-  since: string;
-  until: string;
-}) {
-  const existing = params.rowsByDate.get(params.date);
-  if (existing) return existing;
-
-  const row: Json = {
-    owner_id: params.owner_id,
-    provider: "facebook",
-    page_id: params.page_id,
-    post_id: params.post_id,
-
-    // daily row
-    date_start: params.date,
-    date_stop: params.date,
-
-    // infos utiles pour debug/front
-    post_created_time: safeMetaTime(params.postSummary?.created_time),
-    type_publication: detectFacebookPublicationType(params.postSummary),
-
-    // Important : fetched_at = moment où le test a été lancé,
-    // pas la date de performance du post.
-    fetched_at: new Date().toISOString(),
-
-    // On garde tout le brut pour comparer ce que Meta renvoie vraiment.
-    raw: {
-      test_mode: true,
-      source: "period_day_post_insights",
-      query: {
-        period: "day",
-        since: params.since,
-        until: params.until,
-      },
-      post_summary: params.postSummary ?? {},
-      metrics: {},
-      metric_errors: [],
-    },
-  };
-
-  params.rowsByDate.set(params.date, row);
-  return row;
-}
-
-function applyDailyPagePostMetric(row: Json, metricName: string, value: any) {
-  if (metricName === "post_reactions_by_type_total") {
-    const reactions = asObject(value);
-    row.reactions_by_type = reactions;
-
-    row.reactions_total = Object.values(reactions).reduce(
-      (sum: number, n: any) => sum + (toNumber(n, 0) || 0),
-      0
-    );
-
-    return;
-  }
-
-  if (metricName === "post_video_retention_graph") {
-    row.video_retention_graph = asObject(value);
-    return;
-  }
-
-  // Impressions
-  if (metricName === "post_impressions") {
-    row.post_impressions = toBigIntOrNull(value);
-    return;
-  }
-
-  if (metricName === "post_impressions_unique") {
-    row.post_impressions_unique = toBigIntOrNull(value);
-    return;
-  }
-
-  if (metricName === "post_impressions_organic") {
-    row.post_impressions_organic = toBigIntOrNull(value);
-    return;
-  }
-
-  if (metricName === "post_impressions_organic_unique") {
-    row.post_impressions_organic_unique = toBigIntOrNull(value);
-    return;
-  }
-
-  if (metricName === "post_impressions_paid") {
-    row.post_impressions_paid = toBigIntOrNull(value);
-    return;
-  }
-
-  if (metricName === "post_impressions_paid_unique") {
-    row.post_impressions_paid_unique = toBigIntOrNull(value);
-    return;
-  }
-
-  if (metricName === "post_impressions_viral") {
-    row.post_impressions_viral = toBigIntOrNull(value);
-    return;
-  }
-
-  if (metricName === "post_impressions_viral_unique") {
-    row.post_impressions_viral_unique = toBigIntOrNull(value);
-    return;
-  }
-
-  // Engagement / vues média
-  if (metricName === "post_total_media_view_unique") {
-    row.post_total_media_view_unique = toBigIntOrNull(value);
-    return;
-  }
-
-  if (metricName === "post_clicks") {
-    row.post_clicks = toBigIntOrNull(value);
-    return;
-  }
-
-  // Vidéo
-  if (metricName === "post_video_views") {
-    row.video_views = toBigIntOrNull(value);
-    return;
-  }
-
-  if (metricName === "post_video_avg_time_watched") {
-    row.video_avg_time_watched = toNumber(value, null);
-    return;
-  }
-
-  if (metricName === "post_video_complete_views_organic") {
-    row.video_complete_views_organic = toBigIntOrNull(value);
-    return;
-  }
-
-  if (metricName === "post_video_views_organic") {
-    row.video_views_organic = toBigIntOrNull(value);
-    return;
-  }
-
-  if (metricName === "post_video_views_autoplayed") {
-    row.video_views_autoplayed = toBigIntOrNull(value);
-    return;
-  }
-
-  if (metricName === "post_video_views_clicked_to_play") {
-    row.video_views_clicked_to_play = toBigIntOrNull(value);
-    return;
-  }
-}
-
-async function syncPagePostDailyMetricsTest(params: {
-  owner_id: string;
-  page_id: string;
-  post_id: string;
-  pageToken: string;
-  since: string;
-  until: string;
-  metrics?: string[];
-}) {
-  const metrics =
-    params.metrics && params.metrics.length
-      ? params.metrics
-      : TEST_PAGE_POST_DAILY_METRICS;
-
-  const rowsByDate = new Map<string, Json>();
-  const metricErrors: Json[] = [];
-
-  const postSummary = await graphGetSafe(
-    `test_daily_post_summary_${params.post_id}`,
-    params.post_id,
-    params.pageToken,
-    {
-      // TEST daily :
-      // On évite volontairement les champs Meta problématiques/dépréciés.
-      // Le champ "type" peut déclencher :
-      // (#12) deprecate_post_aggregated_fields_for_attachement
-      fields: [
-        "id",
-        "message",
-        "story",
-        "created_time",
-        "permalink_url",
-        "status_type",
-      ].join(","),
-    }
-  );
-
-  const postCreatedDate = isoDateOnly(postSummary?.created_time);
-  const videoIdFromPermalink = extractVideoIdFromFacebookPermalink(
-    postSummary?.permalink_url
-  );
-
-    for (const metricName of metrics) {
-      try {
-        const json = await graphGet(
-          `${params.post_id}/insights`,
-          params.pageToken,
-          {
-            metric: metricName,
-            period: "day",
-            since: params.since,
-            until: params.until,
-          }
-        );
-
-      const metricData = asArray(json?.data)[0];
-      const values = asArray(metricData?.values);
-
-      for (const item of values) {
-        const date = metaDailyDateFromEndTime(item?.end_time);
-        const value = item?.value ?? null;
-
-        // Sécurité importante :
-        // Si Meta renvoie une ligne daily avant la date de publication,
-        // on la considère comme invalide.
-        // Exemple réel : post créé le 2019-01-18 mais Meta renvoie 0 le 2019-01-10.
-        if (isBeforeISODate(date, postCreatedDate)) {
-          metricErrors.push({
-            metric: metricName,
-            skipped: true,
-            reason: "metric_date_before_post_created_time",
-            date,
-            post_created_date: postCreatedDate,
-            value,
-            end_time: item?.end_time ?? null,
-          });
-          continue;
-        }
-
-        const row = getOrCreateDailyPostMetricRow({
-          rowsByDate,
-          owner_id: params.owner_id,
-          page_id: params.page_id,
-          post_id: params.post_id,
-          postSummary,
-          date,
-          since: params.since,
-          until: params.until,
-        });
-
-        applyDailyPagePostMetric(row, metricName, value);
-
-        row.raw.metrics[metricName] = row.raw.metrics[metricName] || [];
-        row.raw.metrics[metricName].push({
-          value,
-          end_time: item?.end_time ?? null,
-        });
-      }
-    } catch (e: any) {
-      metricErrors.push({
-        metric: metricName,
-        error: e?.message || String(e),
-      });
-    }
-  }
-
-  const rows = Array.from(rowsByDate.values()).map((row) => ({
-    ...row,
-    raw: {
-      ...row.raw,
-      metric_errors: metricErrors,
-    },
-  }));
-
-  if (rows.length) {
-    await supabaseUpsert(
-      TEST_META_PAGE_POST_DAILY_TABLE,
-      rows,
-      "owner_id,provider,page_id,post_id,date_start,date_stop"
-    );
-  }
-
-  // TEST vidéo object-level :
-  // Si le post est une vidéo, les vraies métriques vidéo peuvent être portées
-  // par l'objet vidéo lui-même, pas par le post container.
-  let videoObjectTest: Json | null = null;
-
-  if (videoIdFromPermalink) {
-    const videoMetricNames = [
-      "total_video_views",
-      "total_video_views_unique",
-      "total_video_impressions",
-      "total_video_impressions_unique",
-      "total_video_avg_time_watched",
-      "total_video_complete_views",
-      "total_video_10s_views",
-      "total_video_retention_graph",
-    ];
-
-    const videoMetricResults: Json = {};
-    const videoMetricErrors: Json[] = [];
-
-    for (const videoMetricName of videoMetricNames) {
-      try {
-        const videoJson = await graphGet(
-          `${videoIdFromPermalink}/video_insights`,
-          params.pageToken,
-          {
-            metric: videoMetricName,
-            period: "day",
-            since: params.since,
-            until: params.until,
-          }
-        );
-
-        videoMetricResults[videoMetricName] = videoJson;
-      } catch (e: any) {
-        videoMetricErrors.push({
-          metric: videoMetricName,
-          error: e?.message || String(e),
-        });
-      }
-    }
-
-    videoObjectTest = {
-      video_id: videoIdFromPermalink,
-      endpoint_tested: `${videoIdFromPermalink}/video_insights`,
-      period: "day",
-      metrics: videoMetricResults,
-      metric_errors: videoMetricErrors,
-    };
-  }
-
-  return {
-    post_id: params.post_id,
-    post_created_date: postCreatedDate,
-    video_id_from_permalink: videoIdFromPermalink,
-    rows_saved: rows.length,
-    metric_errors: metricErrors,
-    video_object_test: videoObjectTest,
-    sample_rows: rows.slice(0, 3),
-  };
-}
-
-
-
-
 
 async function syncInstagramMediaMetrics(owner_id: string, ig_user_id: string, media_id: string, pageToken: string, counters: SyncCounters) {
   const metrics = "reach,views,likes,comments,shares,saved,total_interactions";
@@ -2942,6 +2524,73 @@ app.get("/health", (_req, res) => {
   });
 });
 
+
+
+// =========================================================
+// ROUTES - SCREENSHOT
+// =========================================================
+
+app.post("/api/screenshot", requireAuth, async (req, res) => {
+  const url = String(req.body?.url || "").trim();
+
+  if (!url) {
+    return res.status(400).json({
+      ok: false,
+      error: "Missing url",
+    });
+  }
+
+  if (!/^https?:\/\//i.test(url)) {
+    return res.status(400).json({
+      ok: false,
+      error: "Invalid url. URL must start with http:// or https://",
+    });
+  }
+
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
+
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
+
+    const page = await browser.newPage({
+      viewport: {
+        width: 1440,
+        height: 1200,
+      },
+    });
+
+    await page.goto(url, {
+      waitUntil: "networkidle",
+      timeout: 60_000,
+    });
+
+    const screenshot = await page.screenshot({
+      fullPage: true,
+      type: "png",
+    });
+
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Content-Disposition", 'inline; filename="screenshot.png"');
+
+    return res.send(screenshot);
+  } catch (e: any) {
+    console.error("[screenshot] error:", e);
+
+    return res.status(500).json({
+      ok: false,
+      error: "Screenshot failed",
+      details: e?.message || String(e),
+    });
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+  }
+});
+
 // =========================================================
 // ROUTES - META OAUTH
 // =========================================================
@@ -3320,104 +2969,6 @@ app.post("/api/meta/debug/page-posts", requireAuth, async (req, res) => {
     });
   } catch (e: any) {
     return res.status(500).json({ ok: false, error: e?.message || String(e) });
-  }
-});
-
-
-
-// =========================================================
-// TEST ROUTE - Page Post Daily Metrics
-// ---------------------------------------------------------
-// Route de test :
-// POST /api/meta/test/page-post-daily-metrics
-//
-// Body attendu :
-// {
-//   "owner_id": "...",
-//   "page_id": "...",
-//   "post_id": "...",
-//   "since": "2026-05-01",
-//   "until": "2026-05-29"
-// }
-//
-// Optionnel :
-// {
-//   "post_ids": ["post_1", "post_2"],
-//   "metrics": ["post_impressions_unique", "post_clicks"]
-// }
-// =========================================================
-
-app.post("/api/meta/test/page-post-daily-metrics", requireAuth, async (req, res) => {
-  try {
-    const owner_id = String(req.body?.owner_id || "").trim();
-    const page_id = String(req.body?.page_id || "").trim();
-
-    const singlePostId = String(req.body?.post_id || "").trim();
-    const post_ids = Array.isArray(req.body?.post_ids)
-      ? req.body.post_ids.map(String).filter(Boolean)
-      : singlePostId
-        ? [singlePostId]
-        : [];
-
-    const since = parseDateOrFallback(req.body?.since, daysAgoISODate(30));
-    const until = parseDateOrFallback(req.body?.until, todayISODate());
-
-    const metrics = Array.isArray(req.body?.metrics)
-      ? req.body.metrics.map(String).filter(Boolean)
-      : undefined;
-
-    if (!owner_id) {
-      return res.status(400).json({ ok: false, error: "Missing owner_id" });
-    }
-
-    if (!page_id) {
-      return res.status(400).json({ ok: false, error: "Missing page_id" });
-    }
-
-    if (!post_ids.length) {
-      return res.status(400).json({
-        ok: false,
-        error: "Missing post_id or post_ids",
-      });
-    }
-
-    const pageToken = await getFacebookPageAccessToken(owner_id, page_id);
-
-    const results = [];
-
-    for (const post_id of post_ids) {
-      const result = await syncPagePostDailyMetricsTest({
-        owner_id,
-        page_id,
-        post_id,
-        pageToken,
-        since,
-        until,
-        metrics,
-      });
-
-      results.push(result);
-    }
-
-    return res.json({
-      ok: true,
-      test_mode: true,
-      route: "/api/meta/test/page-post-daily-metrics",
-      table_used: TEST_META_PAGE_POST_DAILY_TABLE,
-      period_used: "day",
-      owner_id,
-      page_id,
-      since,
-      until,
-      posts_tested: post_ids.length,
-      results,
-    });
-  } catch (e: any) {
-    return res.status(500).json({
-      ok: false,
-      route: "/api/meta/test/page-post-daily-metrics",
-      error: e?.message || String(e),
-    });
   }
 });
 
