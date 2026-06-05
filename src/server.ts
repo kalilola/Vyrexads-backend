@@ -2563,13 +2563,16 @@ app.post("/api/screenshot", requireAuth, async (req, res) => {
     });
 
     await page.goto(url, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
       timeout: 60_000,
     });
+
+    await page.waitForTimeout(3000);
 
     const screenshot = await page.screenshot({
       fullPage: true,
       type: "png",
+      timeout: 120_000,
     });
 
     res.setHeader("Content-Type", "image/png");
