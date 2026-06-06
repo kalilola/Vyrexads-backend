@@ -8069,20 +8069,192 @@ app.post("/api/google-ads/sync-all", requireAuth, async (req, res) => {
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 if (!ANTHROPIC_API_KEY) console.warn("[env] Missing ANTHROPIC_API_KEY");
 
+type MotionAdChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+type MotionAdUploadFile = {
+  file_name: string;
+  mime_type: string;
+  size_bytes?: number;
+  base64: string;
+};
+
+app.post("/api/motion-ad/sessions", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.body?.owner_id || "");
+    const company_id = req.body?.company_id ? String(req.body.company_id) : null;
+    const title = String(req.body?.title || "Nouvelle publicité");
+    const ad_format = String(req.body?.ad_format || "9:16");
+
+    if (!owner_id) {
+      return res.status(400).json({ ok: false, error: "Missing owner_id" });
+    }
+
+    const id = crypto.randomUUID();
+
+    const rows = await supabaseInsertReturning("motion_ad_sessions", [
+      {
+        id,
+        owner_id,
+        company_id,
+        title,
+        ad_format,
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+
+    return res.json({ ok: true, session: rows[0] });
+  } catch (e: any) {
+    console.error("[motion-ad][sessions] error:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.get("/api/motion-ad/sessions", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.query.owner_id || "");
+
+    if (!owner_id) {
+      return res.status(400).json({ ok: false, error: "Missing owner_id" });
+    }
+
+    const q = new URLSearchParams();
+    q.set("owner_id", `eq.${owner_id}`);
+    q.set("select", "*");
+    q.set("order", "updated_at.desc");
+    q.set("limit", "30");
+
+    const sessions = await supabaseSelect("motion_ad_sessions", q);
+
+    return res.json({ ok: true, sessions });
+  } catch (e: any) {
+    console.error("[motion-ad][list sessions] error:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.get("/api/motion-ad/messages", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.query.owner_id || "");
+    const session_id = String(req.query.session_id || "");
+
+    if (!owner_id || !session_id) {
+      return res.status(400).json({ ok: false, error: "Missing owner_id or session_id" });
+    }
+
+    const q = new URLSearchParams();
+    q.set("owner_id", `eq.${owner_id}`);
+    q.set("session_id", `eq.${session_id}`);
+    q.set("select", "*");
+    q.set("order", "created_at.asc");
+
+    const messages = await supabaseSelect("motion_ad_messages", q);
+
+    const qa = new URLSearchParams();
+    qa.set("owner_id", `eq.${owner_id}`);
+    qa.set("session_id", `eq.${session_id}`);
+    qa.set("select", "*");
+    qa.set("order", "created_at.asc");
+
+    const attachments = await supabaseSelect("motion_ad_attachments", qa);
+
+    return res.json({ ok: true, messages, attachments });
+  } catch (e: any) {
+    console.error("[motion-ad][messages] error:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.post("/api/motion-ad/upload", requireAuth, async (req, res) => {
+  try {
+    if (!supabaseAdmin) {
+      return res.status(500).json({ ok: false, error: "Missing Supabase admin client" });
+    }
+
+    const owner_id = String(req.body?.owner_id || "");
+    const session_id = String(req.body?.session_id || "");
+    const files = (req.body?.files || []) as MotionAdUploadFile[];
+
+    if (!owner_id || !session_id) {
+      return res.status(400).json({ ok: false, error: "Missing owner_id or session_id" });
+    }
+
+    if (!Array.isArray(files) || files.length === 0) {
+      return res.status(400).json({ ok: false, error: "Missing files" });
+    }
+
+    const uploadedRows: Json[] = [];
+
+    for (const file of files) {
+      const id = crypto.randomUUID();
+      const safeName = String(file.file_name || "file")
+        .replace(/[^\w.\-]+/g, "_")
+        .slice(0, 120);
+
+      const storagePath = `${owner_id}/${session_id}/${id}-${safeName}`;
+      const buffer = Buffer.from(cleanBase64DataUrl(file.base64), "base64");
+
+      const { error: uploadError } = await supabaseAdmin.storage
+        .from("motion-ad-attachments")
+        .upload(storagePath, buffer, {
+          contentType: file.mime_type || "application/octet-stream",
+          upsert: false,
+        });
+
+      if (uploadError) {
+        throw new Error(`Storage upload failed: ${uploadError.message}`);
+      }
+
+      const { data: publicData } = supabaseAdmin.storage
+        .from("motion-ad-attachments")
+        .getPublicUrl(storagePath);
+
+      uploadedRows.push({
+        id,
+        session_id,
+        owner_id,
+        file_name: file.file_name || safeName,
+        mime_type: file.mime_type || "application/octet-stream",
+        size_bytes: file.size_bytes ?? buffer.byteLength,
+        bucket: "motion-ad-attachments",
+        storage_path: storagePath,
+        public_url: publicData.publicUrl,
+      });
+    }
+
+    const inserted = await supabaseInsertReturning("motion_ad_attachments", uploadedRows);
+
+    return res.json({ ok: true, attachments: inserted });
+  } catch (e: any) {
+    console.error("[motion-ad][upload] error:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
 app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
-  const { owner_id, session_id, messages, system } = req.body as {
-    owner_id: string;
-    session_id: string;
-    messages: { role: string; content: any }[];
-    system: string;
-  };
+  const owner_id = String(req.body?.owner_id || "");
+  const session_id = String(req.body?.session_id || "");
+  const user_text = String(req.body?.user_text || "");
+  const attachment_ids = Array.isArray(req.body?.attachment_ids) ? req.body.attachment_ids : [];
+  const system = String(
+    req.body?.system ||
+      `Tu es un expert en motion design publicitaire pour SaaS.
+Tu réponds en français.
+Tu dois produire une réponse utile pour l'utilisateur.
+Si tu produis du code, mets le code final entre [CODE] et [/CODE].
+Pour cette page de test, produis aussi une explication visible courte avant le code.`
+  );
 
-  if (!owner_id || !session_id || !messages)
+  const messages = (req.body?.messages || []) as MotionAdChatMessage[];
+
+  if (!owner_id || !session_id || !messages.length) {
     return res.status(400).json({ error: "Missing owner_id, session_id or messages" });
+  }
 
-  // --- 1. Headers SSE : on garde la connexion ouverte pour le stream ---
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
 
@@ -8091,7 +8263,33 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
   };
 
   try {
-    // --- 2. Appel Claude avec stream + extended thinking ---
+    let userMessageId: string | null = null;
+
+    if (user_text.trim()) {
+      userMessageId = crypto.randomUUID();
+
+      await supabaseInsert("motion_ad_messages", [
+        {
+          id: userMessageId,
+          session_id,
+          owner_id,
+          role: "user",
+          text_content: user_text.trim(),
+        },
+      ]);
+
+      if (attachment_ids.length > 0) {
+        const q = new URLSearchParams();
+        q.set("owner_id", `eq.${owner_id}`);
+        q.set("session_id", `eq.${session_id}`);
+        q.set("id", `in.(${attachment_ids.map((id: string) => `"${id}"`).join(",")})`);
+
+        await supabasePatch("motion_ad_attachments", q, {
+          message_id: userMessageId,
+        });
+      }
+    }
+
     const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -8110,108 +8308,129 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       }),
     });
 
-    if (!anthropicRes.ok) {
+    if (!anthropicRes.ok || !anthropicRes.body) {
       const err = await anthropicRes.text();
       send("error", { message: err });
       return res.end();
     }
 
-    // --- 3. Lecture du stream SSE depuis Anthropic ---
-    const reader = anthropicRes.body!.getReader();
+    const reader = anthropicRes.body.getReader();
     const decoder = new TextDecoder();
 
-    // Buffers pour reconstituer la réponse complète côté serveur
     let fullThinking = "";
     let fullText = "";
     let fullCode = "";
-    let currentBlockType: "thinking" | "text" | null = null;
-    let buffer = "";
+    let sseBuffer = "";
+
+    const handleAnthropicEvent = (evt: any) => {
+      if (evt.type !== "content_block_delta") return;
+
+      const delta = evt.delta;
+
+      if (delta?.type === "thinking_delta") {
+        const text = delta.thinking || "";
+        fullThinking += text;
+        send("thinking", { text });
+      }
+
+      if (delta?.type === "text_delta") {
+        const text = delta.text || "";
+        fullText += text;
+        send("text", { text });
+
+        const extracted = extractCodeBlock(fullText);
+        if (extracted) {
+          fullCode = extracted;
+        }
+      }
+    };
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split("\n");
+      sseBuffer += decoder.decode(value, { stream: true });
 
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const raw = line.slice(6).trim();
-        if (raw === "[DONE]") continue;
+      const parts = sseBuffer.split("\n\n");
+      sseBuffer = parts.pop() || "";
+
+      for (const part of parts) {
+        const dataLine = part
+          .split("\n")
+          .find((line) => line.startsWith("data: "));
+
+        if (!dataLine) continue;
+
+        const raw = dataLine.slice(6).trim();
+        if (!raw || raw === "[DONE]") continue;
 
         let evt: any;
-        try { evt = JSON.parse(raw); } catch { continue; }
-
-        // Début d'un nouveau bloc
-        if (evt.type === "content_block_start") {
-          currentBlockType = evt.content_block?.type === "thinking" ? "thinking" : "text";
+        try {
+          evt = JSON.parse(raw);
+        } catch {
+          continue;
         }
 
-        // Delta d'un bloc en cours
-        if (evt.type === "content_block_delta") {
-          const delta = evt.delta;
+        handleAnthropicEvent(evt);
 
-          if (delta?.type === "thinking_delta") {
-            fullThinking += delta.thinking;
-            // On stream le thinking vers le front
-            send("thinking", { text: delta.thinking });
-          }
-
-          if (delta?.type === "text_delta") {
-            fullText += delta.text;
-            buffer += delta.text;
-
-            // Détection du bloc [CODE] dans le buffer
-            if (buffer.includes("[CODE]") && buffer.includes("[/CODE]")) {
-              const match = buffer.match(/\[CODE\]([\s\S]*?)\[\/CODE\]/);
-              if (match) fullCode = match[1].trim();
-            }
-
-            // On stream le texte vers le front token par token
-            send("text", { text: delta.text });
-          }
-        }
-
-        // Fin du stream Anthropic
         if (evt.type === "message_stop") {
-          // Extraction finale du code si pas encore fait
-          if (!fullCode) {
-            const match = fullText.match(/\[CODE\]([\s\S]*?)\[\/CODE\]/);
-            if (match) fullCode = match[1].trim();
-          }
+          fullCode = fullCode || extractCodeBlock(fullText);
+          const visibleText = stripCodeBlock(fullText);
 
-          // On envoie le code complet en un seul event
-          if (fullCode) send("code", { html: fullCode });
-
-          // --- 4. Sauvegarde en base ---
-          // On extrait le texte visible (sans le bloc [CODE])
-          const visibleText = fullText.replace(/\[CODE\][\s\S]*?\[\/CODE\]/, "").trim();
-
-          await supabaseUpsert("motion_ad_messages", [{
-            session_id,
-            owner_id,
-            role: "assistant",
-            text_content: visibleText,
-            thinking_content: fullThinking,
-            code_snapshot: fullCode || null,
-            full_prompt: { system, messages },
-          }], "id");
-
-          // Mise à jour du last_code sur la session
           if (fullCode) {
-            await supabaseUpsert("motion_ad_sessions", [{
-              id: session_id,
-              owner_id,
-              last_code: fullCode,
-              updated_at: new Date().toISOString(),
-            }], "id");
+            send("code", { html: fullCode });
           }
 
-          send("done", { ok: true });
+          const assistantMessageId = crypto.randomUUID();
+
+          await supabaseUpsert(
+            "motion_ad_messages",
+            [
+              {
+                id: assistantMessageId,
+                session_id,
+                owner_id,
+                role: "assistant",
+                text_content: visibleText,
+                thinking_content: fullThinking || null,
+                code_snapshot: fullCode || null,
+                full_prompt: {
+                  system,
+                  messages,
+                  user_message_id: userMessageId,
+                  attachment_ids,
+                },
+              },
+            ],
+            "id"
+          );
+
+          await supabaseUpsert(
+            "motion_ad_sessions",
+            [
+              {
+                id: session_id,
+                owner_id,
+                last_code: fullCode || null,
+                updated_at: new Date().toISOString(),
+              },
+            ],
+            "id"
+          );
+
+          send("done", {
+            ok: true,
+            assistant_message_id: assistantMessageId,
+            user_message_id: userMessageId,
+          });
+
           return res.end();
         }
       }
     }
+
+    send("done", { ok: true });
+    return res.end();
   } catch (e: any) {
     console.error("[motion-ad][chat] error:", e);
     send("error", { message: e?.message || String(e) });
