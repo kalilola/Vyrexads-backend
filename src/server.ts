@@ -23,6 +23,10 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const supabaseAdmin =
+  SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    : null;
 
 const META_APP_ID = process.env.FACEBOOK_APP_ID || process.env.META_APP_ID || "";
 const META_APP_SECRET = process.env.FACEBOOK_APP_SECRET || process.env.META_APP_SECRET || "";
@@ -93,7 +97,7 @@ if (!SUPABASE_SERVICE_ROLE_KEY) console.warn("[env] Missing SUPABASE_SERVICE_ROL
 // =========================================================
 
 app.use(helmet());
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "25mb" }));
 app.use(
   cors({
     origin: (origin, cb) => {
@@ -546,6 +550,59 @@ async function supabaseUpsert(table: string, rows: Json[], onConflict: string) {
 
   return total;
 }
+
+
+async function supabaseInsertReturning<T = any>(table: string, rows: Json[]) {
+  assertSupabaseEnv();
+  if (!rows.length) return [] as T[];
+
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+    method: "POST",
+    headers: supabaseHeaders({
+      Prefer: "return=representation",
+      Accept: "application/json",
+    }),
+    body: JSON.stringify(rows),
+  });
+
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Supabase insert returning ${table} failed: ${res.status} ${text}`);
+  }
+
+  return (text ? JSON.parse(text) : []) as T[];
+}
+
+async function supabasePatch(table: string, query: URLSearchParams, patch: Json) {
+  assertSupabaseEnv();
+
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query.toString()}`, {
+    method: "PATCH",
+    headers: supabaseHeaders({ Prefer: "return=minimal" }),
+    body: JSON.stringify(patch),
+  });
+
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Supabase patch ${table} failed: ${res.status} ${text}`);
+  }
+}
+
+function cleanBase64DataUrl(input: string) {
+  const value = String(input || "");
+  const commaIndex = value.indexOf(",");
+  return commaIndex >= 0 ? value.slice(commaIndex + 1) : value;
+}
+
+function extractCodeBlock(text: string) {
+  const match = String(text || "").match(/\[CODE\]([\s\S]*?)\[\/CODE\]/);
+  return match ? match[1].trim() : "";
+}
+
+function stripCodeBlock(text: string) {
+  return String(text || "").replace(/\[CODE\][\s\S]*?\[\/CODE\]/g, "").trim();
+}
+
 
 async function supabaseInsert(table: string, rows: Json[]) {
   assertSupabaseEnv();
@@ -8161,6 +8218,9 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
     return res.end();
   }
 });
+
+
+
 
 // =========================================================
 // START
