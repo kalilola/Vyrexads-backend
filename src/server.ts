@@ -2530,13 +2530,33 @@ app.get("/health", (_req, res) => {
 // ROUTES - SCREENSHOT
 // =========================================================
 
+// =========================================================
+// ROUTES - SCREENSHOT
+// =========================================================
+
 app.post("/api/screenshot", requireAuth, async (req, res) => {
   const url = String(req.body?.url || "").trim();
+  const owner_id = String(req.body?.owner_id || req.body?.ownerId || "").trim();
+  const company_id = String(req.body?.company_id || req.body?.companyId || "").trim();
 
   if (!url) {
     return res.status(400).json({
       ok: false,
       error: "Missing url",
+    });
+  }
+
+  if (!owner_id) {
+    return res.status(400).json({
+      ok: false,
+      error: "Missing owner_id",
+    });
+  }
+
+  if (!company_id) {
+    return res.status(400).json({
+      ok: false,
+      error: "Missing company_id",
     });
   }
 
@@ -2550,6 +2570,23 @@ app.post("/api/screenshot", requireAuth, async (req, res) => {
   let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
 
   try {
+    assertSupabaseEnv();
+
+    const companyCheckQuery = new URLSearchParams();
+    companyCheckQuery.set("select", "id");
+    companyCheckQuery.set("id", `eq.${company_id}`);
+    companyCheckQuery.set("owner_id", `eq.${owner_id}`);
+    companyCheckQuery.set("limit", "1");
+
+    const companies = await supabaseSelect("companies", companyCheckQuery);
+
+    if (!companies.length) {
+      return res.status(404).json({
+        ok: false,
+        error: "Company not found for this owner_id",
+      });
+    }
+
     browser = await chromium.launch({
       headless: true,
       args: [
@@ -2570,7 +2607,6 @@ app.post("/api/screenshot", requireAuth, async (req, res) => {
     page.setDefaultTimeout(180_000);
     page.setDefaultNavigationTimeout(180_000);
 
-    // Bloque les vidéos et médias lourds, mais garde les images.
     await page.route("**/*", async (route) => {
       const request = route.request();
       const resourceType = request.resourceType();
@@ -2594,7 +2630,6 @@ app.post("/api/screenshot", requireAuth, async (req, res) => {
       timeout: 180_000,
     });
 
-    // Désactive animations / transitions / vidéos côté DOM
     await page.addStyleTag({
       content: `
         *, *::before, *::after {
@@ -2609,7 +2644,6 @@ app.post("/api/screenshot", requireAuth, async (req, res) => {
       `,
     });
 
-    // Scroll jusqu'en bas pour forcer les images lazy-load
     await page.evaluate(async () => {
       await new Promise<void>((resolve) => {
         let totalHeight = 0;
@@ -2641,10 +2675,75 @@ app.post("/api/screenshot", requireAuth, async (req, res) => {
       timeout: 180_000,
     });
 
-    res.setHeader("Content-Type", "image/jpeg");
-    res.setHeader("Content-Disposition", 'inline; filename="screenshot.jpg"');
+    const bucket = "app-files";
+    const context = "company_visual";
+    const mimeType = "image/jpeg";
 
-    return res.send(screenshot);
+    const hostname = new URL(url).hostname.replace(/[^a-zA-Z0-9.-]/g, "-");
+    const fileName = `${Date.now()}-${hostname}-screenshot-${crypto.randomUUID()}.jpg`;
+
+    const storagePath = `${owner_id}/company_visual/${company_id}/${fileName}`;
+
+    const uploadResponse = await fetch(
+      `${SUPABASE_URL}/storage/v1/object/${bucket}/${storagePath}`,
+      {
+        method: "POST",
+        headers: {
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          "Content-Type": mimeType,
+          "x-upsert": "true",
+        },
+        body: screenshot as any,
+      }
+    );
+
+    const uploadText = await uploadResponse.text();
+
+    if (!uploadResponse.ok) {
+      throw new Error(`Supabase storage upload failed: ${uploadResponse.status} ${uploadText}`);
+    }
+
+    const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/${bucket}/${storagePath}`;
+
+    const uploadedFilePayload = {
+      owner_id,
+      context,
+      entity_id: company_id,
+      bucket,
+      path: storagePath,
+      mime_type: mimeType,
+      size_bytes: screenshot.length,
+      public_url: publicUrl,
+    };
+
+    const insertResponse = await fetch(`${SUPABASE_URL}/rest/v1/uploaded_files`, {
+      method: "POST",
+      headers: supabaseHeaders({
+        Prefer: "return=representation",
+      }),
+      body: JSON.stringify(uploadedFilePayload),
+    });
+
+    const insertText = await insertResponse.text();
+
+    if (!insertResponse.ok) {
+      throw new Error(`Supabase uploaded_files insert failed: ${insertResponse.status} ${insertText}`);
+    }
+
+    const insertedRows = insertText ? JSON.parse(insertText) : [];
+
+    return res.json({
+      ok: true,
+      owner_id,
+      company_id,
+      source_url: url,
+      context,
+      bucket,
+      path: storagePath,
+      public_url: publicUrl,
+      uploaded_file: insertedRows[0] || uploadedFilePayload,
+    });
   } catch (e: any) {
     console.error("[screenshot] error:", e);
 
