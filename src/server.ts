@@ -2552,7 +2552,12 @@ app.post("/api/screenshot", requireAuth, async (req, res) => {
   try {
     browser = await chromium.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+      ],
     });
 
     const page = await browser.newPage({
@@ -2562,23 +2567,78 @@ app.post("/api/screenshot", requireAuth, async (req, res) => {
       },
     });
 
+    page.setDefaultTimeout(180_000);
+    page.setDefaultNavigationTimeout(180_000);
+
+    // Bloque les vidéos et médias lourds, mais garde les images.
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      const resourceType = request.resourceType();
+      const requestUrl = request.url().toLowerCase();
+
+      if (
+        resourceType === "media" ||
+        requestUrl.endsWith(".mp4") ||
+        requestUrl.endsWith(".webm") ||
+        requestUrl.endsWith(".mov") ||
+        requestUrl.endsWith(".avi")
+      ) {
+        return route.abort();
+      }
+
+      return route.continue();
+    });
+
     await page.goto(url, {
       waitUntil: "domcontentloaded",
-      timeout: 60_000,
+      timeout: 180_000,
+    });
+
+    // Désactive animations / transitions / vidéos côté DOM
+    await page.addStyleTag({
+      content: `
+        *, *::before, *::after {
+          animation: none !important;
+          transition: none !important;
+          scroll-behavior: auto !important;
+        }
+
+        video {
+          display: none !important;
+        }
+      `,
+    });
+
+    // Scroll jusqu'en bas pour forcer les images lazy-load
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve) => {
+        let totalHeight = 0;
+        const distance = 800;
+        const timer = setInterval(() => {
+          const scrollHeight = Math.max(
+            document.body.scrollHeight,
+            document.documentElement.scrollHeight
+          );
+
+          window.scrollBy(0, distance);
+          totalHeight += distance;
+
+          if (totalHeight >= scrollHeight) {
+            clearInterval(timer);
+            window.scrollTo(0, 0);
+            resolve();
+          }
+        }, 150);
+      });
     });
 
     await page.waitForTimeout(3000);
 
-    await page.evaluate(() => {
-      window.scrollTo(0, 0);
-      document.fonts.ready.catch(() => null);
-    });
-
     const screenshot = await page.screenshot({
-      fullPage: false,
+      fullPage: true,
       type: "jpeg",
-      quality: 80,
-      timeout: 60_000,
+      quality: 85,
+      timeout: 180_000,
     });
 
     res.setHeader("Content-Type", "image/jpeg");
