@@ -8004,6 +8004,164 @@ app.post("/api/google-ads/sync-all", requireAuth, async (req, res) => {
   }
 });
 
+
+// =========================================================
+// MOTION AD BUILDER — Claude streaming + extended thinking
+// =========================================================
+
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+if (!ANTHROPIC_API_KEY) console.warn("[env] Missing ANTHROPIC_API_KEY");
+
+app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
+  const { owner_id, session_id, messages, system } = req.body as {
+    owner_id: string;
+    session_id: string;
+    messages: { role: string; content: any }[];
+    system: string;
+  };
+
+  if (!owner_id || !session_id || !messages)
+    return res.status(400).json({ error: "Missing owner_id, session_id or messages" });
+
+  // --- 1. Headers SSE : on garde la connexion ouverte pour le stream ---
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+
+  const send = (event: string, data: object) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    // --- 2. Appel Claude avec stream + extended thinking ---
+    const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": "interleaved-thinking-2025-05-14",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 16000,
+        thinking: { type: "enabled", budget_tokens: 8000 },
+        stream: true,
+        system,
+        messages,
+      }),
+    });
+
+    if (!anthropicRes.ok) {
+      const err = await anthropicRes.text();
+      send("error", { message: err });
+      return res.end();
+    }
+
+    // --- 3. Lecture du stream SSE depuis Anthropic ---
+    const reader = anthropicRes.body!.getReader();
+    const decoder = new TextDecoder();
+
+    // Buffers pour reconstituer la réponse complète côté serveur
+    let fullThinking = "";
+    let fullText = "";
+    let fullCode = "";
+    let currentBlockType: "thinking" | "text" | null = null;
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split("\n");
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const raw = line.slice(6).trim();
+        if (raw === "[DONE]") continue;
+
+        let evt: any;
+        try { evt = JSON.parse(raw); } catch { continue; }
+
+        // Début d'un nouveau bloc
+        if (evt.type === "content_block_start") {
+          currentBlockType = evt.content_block?.type === "thinking" ? "thinking" : "text";
+        }
+
+        // Delta d'un bloc en cours
+        if (evt.type === "content_block_delta") {
+          const delta = evt.delta;
+
+          if (delta?.type === "thinking_delta") {
+            fullThinking += delta.thinking;
+            // On stream le thinking vers le front
+            send("thinking", { text: delta.thinking });
+          }
+
+          if (delta?.type === "text_delta") {
+            fullText += delta.text;
+            buffer += delta.text;
+
+            // Détection du bloc [CODE] dans le buffer
+            if (buffer.includes("[CODE]") && buffer.includes("[/CODE]")) {
+              const match = buffer.match(/\[CODE\]([\s\S]*?)\[\/CODE\]/);
+              if (match) fullCode = match[1].trim();
+            }
+
+            // On stream le texte vers le front token par token
+            send("text", { text: delta.text });
+          }
+        }
+
+        // Fin du stream Anthropic
+        if (evt.type === "message_stop") {
+          // Extraction finale du code si pas encore fait
+          if (!fullCode) {
+            const match = fullText.match(/\[CODE\]([\s\S]*?)\[\/CODE\]/);
+            if (match) fullCode = match[1].trim();
+          }
+
+          // On envoie le code complet en un seul event
+          if (fullCode) send("code", { html: fullCode });
+
+          // --- 4. Sauvegarde en base ---
+          // On extrait le texte visible (sans le bloc [CODE])
+          const visibleText = fullText.replace(/\[CODE\][\s\S]*?\[\/CODE\]/, "").trim();
+
+          await supabaseUpsert("motion_ad_messages", [{
+            session_id,
+            owner_id,
+            role: "assistant",
+            text_content: visibleText,
+            thinking_content: fullThinking,
+            code_snapshot: fullCode || null,
+            full_prompt: { system, messages },
+          }], "id");
+
+          // Mise à jour du last_code sur la session
+          if (fullCode) {
+            await supabaseUpsert("motion_ad_sessions", [{
+              id: session_id,
+              owner_id,
+              last_code: fullCode,
+              updated_at: new Date().toISOString(),
+            }], "id");
+          }
+
+          send("done", { ok: true });
+          return res.end();
+        }
+      }
+    }
+  } catch (e: any) {
+    console.error("[motion-ad][chat] error:", e);
+    send("error", { message: e?.message || String(e) });
+    return res.end();
+  }
+});
+
 // =========================================================
 // START
 // =========================================================
