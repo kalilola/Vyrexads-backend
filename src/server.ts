@@ -8069,6 +8069,8 @@ app.post("/api/google-ads/sync-all", requireAuth, async (req, res) => {
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 if (!ANTHROPIC_API_KEY) console.warn("[env] Missing ANTHROPIC_API_KEY");
 
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
+
 type MotionAdChatMessage = {
   role: "user" | "assistant";
   content: string;
@@ -8299,7 +8301,7 @@ Pour cette page de test, produis aussi une explication visible courte avant le c
         "anthropic-beta": "interleaved-thinking-2025-05-14",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
+        model: ANTHROPIC_MODEL,
         max_tokens: 16000,
         thinking: { type: "enabled", budget_tokens: 8000 },
         stream: true,
