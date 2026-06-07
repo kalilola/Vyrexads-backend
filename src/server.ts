@@ -8260,7 +8260,7 @@ const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-4-8";
 
 type MotionAdChatMessage = {
   role: "user" | "assistant";
-  content: string;
+  content: any;
 };
 
 type MotionAdUploadFile = {
@@ -8269,6 +8269,110 @@ type MotionAdUploadFile = {
   size_bytes?: number;
   base64: string;
 };
+
+
+type MotionAdDbMessage = {
+  id: string;
+  session_id: string;
+  owner_id: string;
+  role: "user" | "assistant";
+  text_content?: string | null;
+  thinking_content?: string | null;
+  code_snapshot?: string | null;
+  full_prompt?: any;
+  created_at?: string;
+  position: number;
+  is_active: boolean;
+  edited_from_message_id?: string | null;
+  superseded_at?: string | null;
+  updated_at?: string;
+};
+
+function parseOptionalPosition(value: any): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) return null;
+  return n;
+}
+
+async function getActiveMotionAdMessages(owner_id: string, session_id: string) {
+  const q = new URLSearchParams();
+  q.set("owner_id", `eq.${owner_id}`);
+  q.set("session_id", `eq.${session_id}`);
+  q.set("is_active", "eq.true");
+  q.set("select", "*");
+  q.set("order", "position.asc,created_at.asc");
+
+  return await supabaseSelect<MotionAdDbMessage>("motion_ad_messages", q);
+}
+
+async function getActiveMotionAdMessageAtPosition(
+  owner_id: string,
+  session_id: string,
+  position: number
+) {
+  const q = new URLSearchParams();
+  q.set("owner_id", `eq.${owner_id}`);
+  q.set("session_id", `eq.${session_id}`);
+  q.set("is_active", "eq.true");
+  q.set("position", `eq.${position}`);
+  q.set("select", "*");
+  q.set("limit", "1");
+
+  const rows = await supabaseSelect<MotionAdDbMessage>("motion_ad_messages", q);
+  return rows[0] || null;
+}
+
+async function getNextMotionAdMessagePosition(owner_id: string, session_id: string) {
+  const q = new URLSearchParams();
+  q.set("owner_id", `eq.${owner_id}`);
+  q.set("session_id", `eq.${session_id}`);
+  q.set("is_active", "eq.true");
+  q.set("select", "position");
+  q.set("order", "position.desc");
+  q.set("limit", "1");
+
+  const rows = await supabaseSelect<{ position: number }>("motion_ad_messages", q);
+  const maxPosition = Number(rows[0]?.position ?? -1);
+  return Number.isFinite(maxPosition) ? maxPosition + 1 : 0;
+}
+
+async function deactivateMotionAdMessagesFromPosition(
+  owner_id: string,
+  session_id: string,
+  position: number
+) {
+  const q = new URLSearchParams();
+  q.set("owner_id", `eq.${owner_id}`);
+  q.set("session_id", `eq.${session_id}`);
+  q.set("is_active", "eq.true");
+  q.set("position", `gte.${position}`);
+
+  await supabasePatch("motion_ad_messages", q, {
+    is_active: false,
+    superseded_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+}
+
+function motionDbMessagesToAnthropicMessages(rows: MotionAdDbMessage[]): MotionAdChatMessage[] {
+  return rows
+    .filter((row) => row.is_active !== false)
+    .sort((a, b) => Number(a.position || 0) - Number(b.position || 0))
+    .map((row) => {
+      const text = String(row.text_content || "").trim();
+      const code = String(row.code_snapshot || "").trim();
+      const content =
+        row.role === "assistant" && code
+          ? `${text}\n\n[CODE]\n${code}\n[/CODE]`.trim()
+          : text;
+
+      return {
+        role: row.role === "assistant" ? "assistant" : "user",
+        content: content || (row.role === "assistant" ? "Réponse assistant vide." : "Message utilisateur vide."),
+      };
+    });
+}
 
 app.post("/api/motion-ad/sessions", requireAuth, async (req, res) => {
   try {
@@ -8336,8 +8440,9 @@ app.get("/api/motion-ad/messages", requireAuth, async (req, res) => {
     const q = new URLSearchParams();
     q.set("owner_id", `eq.${owner_id}`);
     q.set("session_id", `eq.${session_id}`);
+    q.set("is_active", "eq.true");
     q.set("select", "*");
-    q.set("order", "created_at.asc");
+    q.set("order", "position.asc,created_at.asc");
 
     const messages = await supabaseSelect("motion_ad_messages", q);
 
@@ -8427,6 +8532,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
   const session_id = String(req.body?.session_id || "");
   const user_text = String(req.body?.user_text || "");
   const attachment_ids = Array.isArray(req.body?.attachment_ids) ? req.body.attachment_ids : [];
+  const edit_position = parseOptionalPosition(req.body?.edit_position);
   const system = String(
     req.body?.system ||
       `Tu es Vyrex·Motion, un expert mondial en motion design publicitaire pour SaaS.
@@ -8658,7 +8764,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
   );
   const messages = (req.body?.messages || []) as MotionAdChatMessage[];
 
-  if (!owner_id || !session_id || !messages.length) {
+  if (!owner_id || !session_id || (!messages.length && !user_text.trim())) {
     return res.status(400).json({ error: "Missing owner_id, session_id or messages" });
   }
 
@@ -8673,9 +8779,20 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
 
   try {
     let userMessageId: string | null = null;
+    let userMessagePosition: number | null = null;
+    let editedFromMessageId: string | null = null;
 
     if (user_text.trim()) {
       userMessageId = crypto.randomUUID();
+
+      if (edit_position !== null) {
+        const previousMessage = await getActiveMotionAdMessageAtPosition(owner_id, session_id, edit_position);
+        editedFromMessageId = previousMessage?.id || null;
+        await deactivateMotionAdMessagesFromPosition(owner_id, session_id, edit_position);
+        userMessagePosition = edit_position;
+      } else {
+        userMessagePosition = await getNextMotionAdMessagePosition(owner_id, session_id);
+      }
 
       await supabaseInsert("motion_ad_messages", [
         {
@@ -8684,6 +8801,10 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
           owner_id,
           role: "user",
           text_content: user_text.trim(),
+          position: userMessagePosition,
+          is_active: true,
+          edited_from_message_id: editedFromMessageId,
+          updated_at: new Date().toISOString(),
         },
       ]);
 
@@ -8699,9 +8820,14 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       }
     }
 
+    const activeRows = await getActiveMotionAdMessages(owner_id, session_id);
+    const baseMessages = activeRows.length
+      ? motionDbMessagesToAnthropicMessages(activeRows)
+      : messages;
+
     const attachmentRows = await getMotionAdAttachmentsForSession(owner_id, session_id);
     const attachmentBlocks = await buildClaudeAttachmentBlocks(attachmentRows);
-    const anthropicMessages = injectAttachmentsIntoLastUserMessage(messages, attachmentBlocks);
+    const anthropicMessages = injectAttachmentsIntoLastUserMessage(baseMessages, attachmentBlocks);
 
     console.log("[motion-ad][chat] attachments sent to Claude:", {
       session_id,
@@ -8822,8 +8948,12 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
           }
 
           const assistantMessageId = crypto.randomUUID();
+          const assistantPosition =
+            userMessagePosition !== null
+              ? userMessagePosition + 1
+              : await getNextMotionAdMessagePosition(owner_id, session_id);
 
-          await supabaseUpsert(
+          await supabaseInsert(
             "motion_ad_messages",
             [
               {
@@ -8834,10 +8964,15 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
                 text_content: visibleText,
                 thinking_content: fullThinking || null,
                 code_snapshot: fullCode || null,
+                position: assistantPosition,
+                is_active: true,
+                updated_at: new Date().toISOString(),
                 full_prompt: {
                   system,
                   messages: anthropicMessages,
                   attachment_ids,
+                  edit_position,
+                  edited_from_message_id: editedFromMessageId,
                   attachments: attachmentRows.map((a) => ({
                     id: a.id,
                     file_name: a.file_name,
@@ -8854,11 +8989,9 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
                     full_code_length: fullCode.length,
                   },
                   user_message_id: userMessageId,
-                  
                 },
               },
-            ],
-            "id"
+            ]
           );
 
           await supabaseUpsert(
@@ -8878,6 +9011,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
             ok: true,
             assistant_message_id: assistantMessageId,
             user_message_id: userMessageId,
+            edit_position,
           });
 
           return res.end();
