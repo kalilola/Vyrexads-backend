@@ -762,13 +762,23 @@ function normalizeClaudeOutput(text: string) {
 function extractCodeBlock(text: string) {
   const normalized = normalizeClaudeOutput(text);
 
-  const match = normalized.match(/\[CODE\]([\s\S]*?)\[\/CODE\]/i);
-  if (!match) return "";
+  const closedMatch = normalized.match(/\[CODE\]([\s\S]*?)\[\/CODE\]/i);
+  if (closedMatch) {
+    return closedMatch[1]
+      .replace(/^\s*```(?:html|jsx|tsx|javascript|js|css)?\s*/i, "")
+      .replace(/\s*```\s*$/i, "")
+      .trim();
+  }
 
-  return match[1]
-    .replace(/^\s*```(?:html|jsx|tsx|javascript|js|css)?\s*/i, "")
-    .replace(/\s*```\s*$/i, "")
-    .trim();
+  const openMatch = normalized.match(/\[CODE\]([\s\S]*)$/i);
+  if (openMatch) {
+    return openMatch[1]
+      .replace(/^\s*```(?:html|jsx|tsx|javascript|js|css)?\s*/i, "")
+      .replace(/\s*```\s*$/i, "")
+      .trim();
+  }
+
+  return "";
 }
 
 function stripCodeBlock(text: string) {
