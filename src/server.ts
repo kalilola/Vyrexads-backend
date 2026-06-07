@@ -8626,6 +8626,13 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       * n'ajoute jamais d'explication dans le bloc [CODE].
       * n'ajoute jamais de markdown dans le bloc [CODE].
       * ne mets jamais de triple backticks.
+      * Le code HTML doit être un document complet et fermé : <!DOCTYPE html>, <html>, <head>, <body>, </body>, </html>.
+        Tu dois toujours inclure soit des animations CSS auto-suffisantes, soit un script JS complet qui déclenche les états visibles.
+        N’utilise jamais des éléments avec opacity: 0 sans animation/keyframes/script permettant de les rendre visibles.
+        Le ratio de l’animation doit correspondre au format demandé par l’utilisateur.
+        Si le format est 9:16, la scène interne doit utiliser aspect-ratio: 9 / 16.
+        Si le format est 16:9, la scène interne doit utiliser aspect-ratio: 16 / 9.
+        Pour la preview Vyrexads, privilégie des animations CSS keyframes plutôt qu’une timeline uniquement pilotée par JS.
 
       ============================================================
       GESTION DES MODIFICATIONS
