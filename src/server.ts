@@ -790,6 +790,70 @@ function stripCodeBlock(text: string) {
     .trim();
 }
 
+function normalizeMotionQuestionsBlock(text: string) {
+  return String(text || "")
+    .replace(/\*\*\s*(\[\/?QUESTIONS\])\s*\*\*/gi, "$1")
+    .replace(/__\s*(\[\/?QUESTIONS\])\s*__/gi, "$1")
+    .replace(/`+\s*(\[\/?QUESTIONS\])\s*`+/gi, "$1")
+    .replace(/\[questions\]/gi, "[QUESTIONS]")
+    .replace(/\[\/questions\]/gi, "[/QUESTIONS]");
+}
+
+function extractQuestionsBlock(text: string) {
+  const normalized = normalizeMotionQuestionsBlock(text);
+  const match = normalized.match(/\[QUESTIONS\]([\s\S]*?)\[\/QUESTIONS\]/i);
+  if (!match) return [];
+
+  let raw = match[1]
+    .replace(/^\s*```(?:json)?\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
+
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function stripQuestionsBlock(text: string) {
+  const normalized = normalizeMotionQuestionsBlock(text);
+
+  return normalized
+    .replace(/\[QUESTIONS\][\s\S]*?\[\/QUESTIONS\]/gi, "")
+    .replace(/\[QUESTIONS\][\s\S]*$/gi, "")
+    .trim();
+}
+
+function stripMotionBuilderBlocks(text: string) {
+  return stripQuestionsBlock(stripCodeBlock(text));
+}
+
+async function updateMotionAdSessionQuestions(params: {
+  session_id: string;
+  owner_id: string;
+  questions?: any[];
+  question_answers?: any[];
+  questions_status?: string;
+}) {
+  await supabaseUpsert(
+    "motion_ad_sessions",
+    [
+      {
+        id: params.session_id,
+        owner_id: params.owner_id,
+        questions: params.questions ?? undefined,
+        question_answers: params.question_answers ?? undefined,
+        questions_status: params.questions_status ?? undefined,
+        questions_updated_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ],
+    "id"
+  );
+}
+
 
 async function supabaseInsert(table: string, rows: Json[]) {
   assertSupabaseEnv();
@@ -8270,6 +8334,14 @@ type MotionAdUploadFile = {
   base64: string;
 };
 
+type MotionQuestionAnswer = {
+  id: string;
+  question: string;
+  answer: string;
+  checked?: boolean;
+  category?: string;
+};
+
 
 type MotionAdDbMessage = {
   id: string;
@@ -8394,6 +8466,10 @@ app.post("/api/motion-ad/sessions", requireAuth, async (req, res) => {
         company_id,
         title,
         ad_format,
+        questions: [],
+        question_answers: [],
+        questions_status: "idle",
+        questions_updated_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       },
     ]);
@@ -8532,6 +8608,9 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
   const session_id = String(req.body?.session_id || "");
   const user_text = String(req.body?.user_text || "");
   const attachment_ids = Array.isArray(req.body?.attachment_ids) ? req.body.attachment_ids : [];
+  const question_answers = Array.isArray(req.body?.question_answers)
+    ? (req.body.question_answers as MotionQuestionAnswer[])
+    : [];
   const edit_position = parseOptionalPosition(req.body?.edit_position);
   const system = String(
     req.body?.system ||
@@ -8578,8 +8657,8 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       [APERÇU]
       [/APERÇU]
 
-      [CODE]
-      [/CODE]
+      [QUESTIONS]
+      [/QUESTIONS]
 
       N'utilise jamais la balise [THINKING].
       Le thinking natif du modèle est géré séparément par l'API.
@@ -8627,6 +8706,71 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       * Fond transparent, fond plein, ou adaptable ?
 
       Tu ne génères AUCUN code avant d'avoir reçu les réponses.
+
+      Tu dois renvoyer les questions dans un bloc JSON strict :
+
+      [QUESTIONS]
+      [
+        {
+          "id": "format_cible",
+          "category": "📐 Format & Placement",
+          "label": "Quel format cible ?",
+          "type": "single",
+          "options": ["16:9", "9:16", "1:1", "4:5", "bannière 728×90", "autre"],
+          "placeholder": "Exemple : 9:16 pour TikTok/Reels",
+          "required": true
+        },
+        {
+          "id": "duree",
+          "category": "📐 Format & Placement",
+          "label": "Quelle durée exacte souhaitez-vous ?",
+          "type": "single",
+          "options": ["5s", "10s", "15s", "20s", "30s"],
+          "placeholder": "Exemple : 20s",
+          "required": true
+        },
+        {
+          "id": "style_visuel",
+          "category": "🎨 Style & Ton",
+          "label": "Quel univers visuel préférez-vous ?",
+          "type": "single",
+          "options": ["épuré/minimaliste", "dynamique/tech", "luxe/premium", "fun/coloré", "futuriste", "corporate"],
+          "placeholder": "Exemple : dynamique/tech premium",
+          "required": true
+        },
+        {
+          "id": "message_principal",
+          "category": "📝 Message & Contenu",
+          "label": "Quel est le message principal de cette publicité ?",
+          "type": "text",
+          "options": [],
+          "placeholder": "Exemple : Vyrexads automatise la création et l’analyse des contenus marketing",
+          "required": true
+        },
+        {
+          "id": "cta",
+          "category": "📝 Message & Contenu",
+          "label": "Quel CTA faut-il afficher ?",
+          "type": "text",
+          "options": [],
+          "placeholder": "Exemple : Essayer Vyrexads",
+          "required": true
+        },
+        {
+          "id": "contraintes",
+          "category": "⚙️ Technique",
+          "label": "Y a-t-il des contraintes techniques ou éléments à éviter ?",
+          "type": "text",
+          "options": [],
+          "placeholder": "Exemple : fond sombre, pas trop de texte, style SaaS premium",
+          "required": false
+        }
+      ]
+      [/QUESTIONS]
+
+      Chaque question doit avoir exactement les clés : id, category, label, type, options, placeholder, required.
+      type doit être "single", "multi" ou "text".
+      Ne mets jamais de markdown dans [QUESTIONS].
       Termine par : ✅ Dès que vous m'aurez répondu, je génèrerai votre animation.
 
       ============================================================
@@ -8820,6 +8964,15 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       }
     }
 
+    if (question_answers.length > 0) {
+      await updateMotionAdSessionQuestions({
+        session_id,
+        owner_id,
+        question_answers,
+        questions_status: "answered",
+      });
+    }
+
     const activeRows = await getActiveMotionAdMessages(owner_id, session_id);
     const baseMessages = activeRows.length
       ? motionDbMessagesToAnthropicMessages(activeRows)
@@ -8893,7 +9046,12 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
           fullCode = extracted;
         }
 
-        const visibleText = stripCodeBlock(fullText);
+        const extractedQuestions = extractQuestionsBlock(fullText);
+        if (extractedQuestions.length > 0) {
+          send("questions", { questions: extractedQuestions });
+        }
+
+        const visibleText = stripMotionBuilderBlocks(fullText);
 
         send("text", {
           text: visibleText,
@@ -8941,7 +9099,18 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
 
         if (evt.type === "message_stop") {
           fullCode = fullCode || extractCodeBlock(fullText);
-          const visibleText = stripCodeBlock(fullText);
+          const finalQuestions = extractQuestionsBlock(fullText);
+          const visibleText = stripMotionBuilderBlocks(fullText);
+
+          if (finalQuestions.length > 0) {
+            await updateMotionAdSessionQuestions({
+              session_id,
+              owner_id,
+              questions: finalQuestions,
+              questions_status: "pending",
+            });
+            send("questions", { questions: finalQuestions });
+          }
 
           if (fullCode) {
             send("code", { html: fullCode });
@@ -8971,6 +9140,8 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
                   system,
                   messages: anthropicMessages,
                   attachment_ids,
+                  question_answers,
+                  extracted_questions: finalQuestions,
                   edit_position,
                   edited_from_message_id: editedFromMessageId,
                   attachments: attachmentRows.map((a) => ({
