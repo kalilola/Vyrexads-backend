@@ -752,13 +752,32 @@ function cleanBase64DataUrl(input: string) {
   return commaIndex >= 0 ? value.slice(commaIndex + 1) : value;
 }
 
+function normalizeClaudeOutput(text: string) {
+  return String(text || "")
+    .replace(/\*\*\s*(\[\/?CODE\])\s*\*\*/g, "$1")
+    .replace(/__\s*(\[\/?CODE\])\s*__/g, "$1")
+    .replace(/`+\s*(\[\/?CODE\])\s*`+/g, "$1");
+}
+
 function extractCodeBlock(text: string) {
-  const match = String(text || "").match(/\[CODE\]([\s\S]*?)\[\/CODE\]/);
-  return match ? match[1].trim() : "";
+  const normalized = normalizeClaudeOutput(text);
+
+  const match = normalized.match(/\[CODE\]([\s\S]*?)\[\/CODE\]/i);
+  if (!match) return "";
+
+  return match[1]
+    .replace(/^\s*```(?:html|jsx|tsx|javascript|js|css)?\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
 }
 
 function stripCodeBlock(text: string) {
-  return String(text || "").replace(/\[CODE\][\s\S]*?\[\/CODE\]/g, "").trim();
+  const normalized = normalizeClaudeOutput(text);
+
+  return normalized
+    .replace(/\[CODE\][\s\S]*?\[\/CODE\]/gi, "")
+    .replace(/\[CODE\][\s\S]*$/gi, "")
+    .trim();
 }
 
 
@@ -8736,11 +8755,21 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       if (delta?.type === "text_delta") {
         const text = delta.text || "";
         fullText += text;
-        send("text", { text });
 
         const extracted = extractCodeBlock(fullText);
         if (extracted) {
           fullCode = extracted;
+        }
+
+        const visibleText = stripCodeBlock(fullText);
+
+        send("text", {
+          text: visibleText,
+          replace: true,
+        });
+
+        if (fullCode) {
+          send("code", { html: fullCode });
         }
       }
     };
