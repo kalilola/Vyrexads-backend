@@ -8710,6 +8710,10 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       return res.end();
     }
 
+    let stopReason: string | null = null;
+    let outputTokens: number | null = null;
+    
+
     const reader = anthropicRes.body.getReader();
     const decoder = new TextDecoder();
 
@@ -8769,6 +8773,11 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
 
         handleAnthropicEvent(evt);
 
+        if (evt.type === "message_delta") {
+          stopReason = evt.delta?.stop_reason || stopReason;
+          outputTokens = evt.usage?.output_tokens ?? outputTokens;
+        }
+
         if (evt.type === "message_stop") {
           fullCode = fullCode || extractCodeBlock(fullText);
           const visibleText = stripCodeBlock(fullText);
@@ -8802,6 +8811,13 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
                     public_url: a.public_url,
                     storage_path: a.storage_path,
                   })),
+                  debug: {
+                    stop_reason: stopReason,
+                    output_tokens: outputTokens,
+                    full_text_length: fullText.length,
+                    full_thinking_length: fullThinking.length,
+                    full_code_length: fullCode.length,
+                  },
                   user_message_id: userMessageId,
                   
                 },
