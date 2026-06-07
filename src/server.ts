@@ -211,6 +211,164 @@ function relayRoute(webhookPath: string, timeoutMs = 600_000) {
   };
 }
 
+
+const CLAUDE_IMAGE_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+
+const CLAUDE_TEXT_MIME_TYPES = new Set([
+  "image/svg+xml",
+  "text/plain",
+  "text/markdown",
+  "text/html",
+  "text/css",
+  "text/javascript",
+  "application/json",
+  "application/javascript",
+  "application/xml",
+  "text/xml",
+]);
+
+async function getMotionAdAttachmentsForSession(owner_id: string, session_id: string) {
+  const q = new URLSearchParams();
+  q.set("owner_id", `eq.${owner_id}`);
+  q.set("session_id", `eq.${session_id}`);
+  q.set("select", "*");
+  q.set("order", "created_at.asc");
+
+  return await supabaseSelect<any>("motion_ad_attachments", q);
+}
+
+async function downloadMotionAdAttachment(row: any) {
+  if (!supabaseAdmin) {
+    throw new Error("Missing Supabase admin client");
+  }
+
+  const { data, error } = await supabaseAdmin.storage
+    .from(row.bucket || "motion-ad-attachments")
+    .download(row.storage_path);
+
+  if (error) {
+    throw new Error(`Storage download failed for ${row.file_name}: ${error.message}`);
+  }
+
+  const arrayBuffer = await data.arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
+async function buildClaudeAttachmentBlocks(rows: any[]) {
+  const blocks: any[] = [];
+
+  if (!rows.length) return blocks;
+
+  blocks.push({
+    type: "text",
+    text:
+      "Voici les assets uploadés par l'utilisateur pour cette publicité motion design. Utilise-les comme base visuelle et ne les ignore pas.",
+  });
+
+  for (const row of rows) {
+    const mimeType = String(row.mime_type || "application/octet-stream");
+    const fileName = String(row.file_name || "fichier");
+
+    if (mimeType.startsWith("video/")) {
+      blocks.push({
+        type: "text",
+        text:
+          `⚠️ VIDÉO DÉTECTÉE : ${fileName}\n` +
+          `URL publique : ${row.public_url || "non disponible"}\n` +
+          `Tu ne peux pas lire précisément son contenu. Demande à l'utilisateur de décrire ce qu'elle montre et où l'intégrer dans l'animation.`,
+      });
+      continue;
+    }
+
+    const fileBuffer = await downloadMotionAdAttachment(row);
+
+    if (CLAUDE_IMAGE_MIME_TYPES.has(mimeType)) {
+      blocks.push({
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: mimeType,
+          data: fileBuffer.toString("base64"),
+        },
+      });
+
+      blocks.push({
+        type: "text",
+        text: `Image fournie : ${fileName}`,
+      });
+
+      continue;
+    }
+
+    if (CLAUDE_TEXT_MIME_TYPES.has(mimeType) || fileName.toLowerCase().endsWith(".svg")) {
+      const text = fileBuffer.toString("utf8");
+
+      blocks.push({
+        type: "text",
+        text:
+          `Fichier fourni : ${fileName}\n` +
+          `Type : ${mimeType}\n\n` +
+          `Contenu du fichier :\n` +
+          `\`\`\`\n${text.slice(0, 120_000)}\n\`\`\``,
+      });
+
+      continue;
+    }
+
+    blocks.push({
+      type: "text",
+      text:
+        `Fichier uploadé non directement lisible par Claude : ${fileName}\n` +
+        `Type : ${mimeType}\n` +
+        `URL publique : ${row.public_url || "non disponible"}\n` +
+        `Demande à l'utilisateur de décrire ce fichier si son contenu est important.`,
+    });
+  }
+
+  return blocks;
+}
+
+function injectAttachmentsIntoLastUserMessage(messages: any[], attachmentBlocks: any[]) {
+  if (!attachmentBlocks.length) return messages;
+
+  const cloned = [...messages];
+  const lastUserIndex = [...cloned].reverse().findIndex((m) => m.role === "user");
+
+  if (lastUserIndex === -1) return messages;
+
+  const index = cloned.length - 1 - lastUserIndex;
+  const current = cloned[index];
+
+  const currentText =
+    typeof current.content === "string"
+      ? current.content
+      : Array.isArray(current.content)
+      ? current.content
+          .filter((block: any) => block?.type === "text")
+          .map((block: any) => block.text)
+          .join("\n")
+      : "";
+
+  cloned[index] = {
+    role: "user",
+    content: [
+      ...attachmentBlocks,
+      {
+        type: "text",
+        text: currentText || "Analyse ces assets pour créer une animation publicitaire.",
+      },
+    ],
+  };
+
+  return cloned;
+}
+
+
 app.post("/relay/content-example", requireAuth, relayRoute(N8N_CONTENT_EXAMPLE_WEBHOOK_PATH, 600_000));
 app.post("/relay/template-regenerate", requireAuth, relayRoute(N8N_TEMPLATE_REGEN_WEBHOOK_PATH, 600_000));
 app.post("/relay/content-regenerate", requireAuth, relayRoute(N8N_CONTENT_REGENERATE_WEBHOOK_PATH, 600_000));
@@ -8516,6 +8674,18 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       }
     }
 
+    const attachmentRows = await getMotionAdAttachmentsForSession(owner_id, session_id);
+    const attachmentBlocks = await buildClaudeAttachmentBlocks(attachmentRows);
+    const anthropicMessages = injectAttachmentsIntoLastUserMessage(messages, attachmentBlocks);
+
+    console.log("[motion-ad][chat] attachments sent to Claude:", {
+      session_id,
+      total_attachments: attachmentRows.length,
+      image_blocks: attachmentBlocks.filter((b) => b.type === "image").length,
+      text_blocks: attachmentBlocks.filter((b) => b.type === "text").length,
+    });
+
+
     const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -8530,7 +8700,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
         thinking: { type: "enabled", budget_tokens: 800000 },
         stream: true,
         system,
-        messages,
+        messages: anthropicMessages,
       }),
     });
 
@@ -8622,9 +8792,18 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
                 code_snapshot: fullCode || null,
                 full_prompt: {
                   system,
-                  messages,
-                  user_message_id: userMessageId,
+                  messages: anthropicMessages,
                   attachment_ids,
+                  attachments: attachmentRows.map((a) => ({
+                    id: a.id,
+                    file_name: a.file_name,
+                    mime_type: a.mime_type,
+                    size_bytes: a.size_bytes,
+                    public_url: a.public_url,
+                    storage_path: a.storage_path,
+                  })),
+                  user_message_id: userMessageId,
+                  
                 },
               },
             ],
