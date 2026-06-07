@@ -8696,8 +8696,8 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       },
       body: JSON.stringify({
         model: ANTHROPIC_MODEL,
-        max_tokens: 16000,
-        thinking: { type: "enabled", budget_tokens: 800000 },
+        max_tokens: 64000,
+        thinking: { type: "adaptive" },
         stream: true,
         system,
         messages: anthropicMessages,
