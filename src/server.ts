@@ -8611,6 +8611,8 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
   const question_answers = Array.isArray(req.body?.question_answers)
     ? (req.body.question_answers as MotionQuestionAnswer[])
     : [];
+  const requested_ad_format = String(req.body?.ad_format || "").trim();
+  const requested_duration_seconds = Number(req.body?.duration_seconds || 0);
   const edit_position = parseOptionalPosition(req.body?.edit_position);
   const system = String(
     req.body?.system ||
@@ -8922,6 +8924,21 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
   };
 
   try {
+    if (["9:16", "1:1", "16:9", "4:5"].includes(requested_ad_format)) {
+      await supabaseUpsert(
+        "motion_ad_sessions",
+        [
+          {
+            id: session_id,
+            owner_id,
+            ad_format: requested_ad_format,
+            updated_at: new Date().toISOString(),
+          },
+        ],
+        "id"
+      );
+    }
+
     let userMessageId: string | null = null;
     let userMessagePosition: number | null = null;
     let editedFromMessageId: string | null = null;
