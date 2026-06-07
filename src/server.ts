@@ -8621,8 +8621,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       * ne suppose pas l'existence de composants externes.
 
       Dans tous les cas :
-
-      * ajoute toujours ce commentaire en tête du code : // VYREXADS_MOTION_BUILDER
+      * n'ajoute jamais de commantaire dans le bloc [CODE].
       * n'ajoute jamais d'explication dans le bloc [CODE].
       * n'ajoute jamais de markdown dans le bloc [CODE].
       * ne mets jamais de triple backticks.
