@@ -8818,8 +8818,12 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
 
       const DURATION = [durée totale en secondes];
       const tl = gsap.timeline({ repeat: -1 });
+      window.__VYREXADS_TL__ = tl;
+      window.__VYREXADS_DURATION__ = DURATION;
 
       DURATION doit toujours être déclaré comme constante globale nommée exactement DURATION.
+      La timeline GSAP principale doit toujours être exposée sur window.__VYREXADS_TL__.
+      La durée totale doit toujours être exposée sur window.__VYREXADS_DURATION__.
 
       ============================================================
       RÈGLES DE MOTION DESIGN
