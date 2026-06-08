@@ -826,8 +826,85 @@ function stripQuestionsBlock(text: string) {
     .trim();
 }
 
+function normalizeMotionMetaBlock(text: string) {
+  return String(text || "")
+    .replace(/\*\*\s*(\[\/?META\])\s*\*\*/gi, "$1")
+    .replace(/__\s*(\[\/?META\])\s*__/gi, "$1")
+    .replace(/`+\s*(\[\/?META\])\s*`+/gi, "$1")
+    .replace(/\[meta\]/gi, "[META]")
+    .replace(/\[\/meta\]/gi, "[/META]");
+}
+
+function extractMotionMetaBlock(text: string) {
+  const normalized = normalizeMotionMetaBlock(text);
+  const match = normalized.match(/\[META\]([\s\S]*?)\[\/META\]/i);
+  if (!match) return null;
+
+  const raw = match[1]
+    .replace(/^\s*```(?:json)?\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
+
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function stripMotionMetaBlock(text: string) {
+  const normalized = normalizeMotionMetaBlock(text);
+
+  return normalized
+    .replace(/\[META\][\s\S]*?\[\/META\]/gi, "")
+    .replace(/\[META\][\s\S]*$/gi, "")
+    .trim();
+}
+
+function normalizeMotionDurationSeconds(value: any) {
+  if (value === null || value === undefined || value === "") return null;
+  const raw = typeof value === "string" ? value.replace(/s\b/i, "").trim() : value;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.min(300, Math.round(n * 100) / 100);
+}
+
+function extractDurationFromMotionCode(code: string) {
+  const value = String(code || "");
+  const patterns = [
+    /const\s+DURATION\s*=\s*([0-9]+(?:\.[0-9]+)?)/i,
+    /window\.__VYREXADS_DURATION__\s*=\s*([0-9]+(?:\.[0-9]+)?)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = value.match(pattern);
+    const duration = normalizeMotionDurationSeconds(match?.[1]);
+    if (duration) return duration;
+  }
+
+  return null;
+}
+
+function extractMotionDurationSeconds(text: string, code: string, fallback?: any) {
+  const meta = extractMotionMetaBlock(text);
+  const metaDuration = normalizeMotionDurationSeconds(
+    (meta as any)?.duration_seconds ??
+      (meta as any)?.total_duration_seconds ??
+      (meta as any)?.duration ??
+      (meta as any)?.total_duration
+  );
+
+  return (
+    metaDuration ||
+    extractDurationFromMotionCode(code) ||
+    normalizeMotionDurationSeconds(fallback) ||
+    null
+  );
+}
+
 function stripMotionBuilderBlocks(text: string) {
-  return stripQuestionsBlock(stripCodeBlock(text));
+  return stripMotionMetaBlock(stripQuestionsBlock(stripCodeBlock(text)));
 }
 
 async function updateMotionAdSessionQuestions(params: {
@@ -8351,6 +8428,7 @@ type MotionAdDbMessage = {
   text_content?: string | null;
   thinking_content?: string | null;
   code_snapshot?: string | null;
+  animation_duration_seconds?: number | null;
   full_prompt?: any;
   created_at?: string;
   position: number;
@@ -8613,6 +8691,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
     : [];
   const requested_ad_format = String(req.body?.ad_format || "").trim();
   const requested_duration_seconds = Number(req.body?.duration_seconds || 0);
+  const requested_motion_duration = normalizeMotionDurationSeconds(requested_duration_seconds);
   const edit_position = parseOptionalPosition(req.body?.edit_position);
   const system = String(
     req.body?.system ||
@@ -8659,8 +8738,14 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       [APERÇU]
       [/APERÇU]
 
+      [META]
+      [/META]
+
       [QUESTIONS]
       [/QUESTIONS]
+
+      [CODE]
+      [/CODE]
 
       N'utilise jamais la balise [THINKING].
       Le thinking natif du modèle est géré séparément par l'API.
@@ -8779,7 +8864,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       TOUR 2+ — GÉNÉRATION DE L'ANIMATION
       ===================================
 
-      Une fois les réponses reçues, produis exactement 3 blocs :
+      Une fois les réponses reçues, produis exactement 4 blocs, dans cet ordre :
 
       [RÉFLEXION]
       2 à 3 phrases sur tes choix créatifs : palette, structure narrative, rythme, composition.
@@ -8789,9 +8874,17 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       Description scène par scène. Maximum 5 à 8 lignes.
       [/APERÇU]
 
+      [META]
+      {"duration_seconds": 10}
+      [/META]
+
       [CODE]
       Code complet autonome.
       [/CODE]
+
+      Le bloc [META] doit contenir uniquement du JSON valide.
+      duration_seconds doit être un nombre, sans unité, égal à la durée totale exacte de l'animation.
+      Si l'utilisateur demande 5s, 10s, 15s, 20s, 25s ou 30s, duration_seconds doit correspondre exactement à cette durée, sauf demande explicite contraire.
 
       ============================================================
       STACK TECHNIQUE OBLIGATOIRE
@@ -8824,6 +8917,8 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       DURATION doit toujours être déclaré comme constante globale nommée exactement DURATION.
       La timeline GSAP principale doit toujours être exposée sur window.__VYREXADS_TL__.
       La durée totale doit toujours être exposée sur window.__VYREXADS_DURATION__.
+      La valeur de DURATION, window.__VYREXADS_DURATION__ et META.duration_seconds doivent être strictement identiques.
+      La timeline principale ne doit pas dépasser DURATION secondes avant de boucler.
 
       ============================================================
       RÈGLES DE MOTION DESIGN
@@ -9024,7 +9119,9 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
         max_tokens: 64000,
         thinking: { type: "enabled", budget_tokens: 16000 },
         stream: true,
-        system,
+        system: `${system}
+
+CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format || "non précisé"}, durée demandée = ${requested_motion_duration || requested_duration_seconds || "non précisée"} secondes. Le bloc [META], const DURATION et window.__VYREXADS_DURATION__ doivent utiliser cette durée exacte si elle est précisée.`,
         messages: anthropicMessages,
       }),
     });
@@ -9080,7 +9177,13 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
         });
 
         if (fullCode) {
-          send("code", { html: fullCode });
+          const streamDuration = extractMotionDurationSeconds(
+            fullText,
+            fullCode,
+            requested_motion_duration
+          );
+          send("code", { html: fullCode, duration_seconds: streamDuration });
+          if (streamDuration) send("duration", { duration_seconds: streamDuration });
         }
       }
     };
@@ -9120,6 +9223,11 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
 
         if (evt.type === "message_stop") {
           fullCode = fullCode || extractCodeBlock(fullText);
+          const motionDurationSeconds = extractMotionDurationSeconds(
+            fullText,
+            fullCode,
+            requested_motion_duration
+          );
           const finalQuestions = extractQuestionsBlock(fullText);
           const visibleText = stripMotionBuilderBlocks(fullText);
 
@@ -9134,7 +9242,11 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
           }
 
           if (fullCode) {
-            send("code", { html: fullCode });
+            send("code", { html: fullCode, duration_seconds: motionDurationSeconds });
+          }
+
+          if (motionDurationSeconds) {
+            send("duration", { duration_seconds: motionDurationSeconds });
           }
 
           const assistantMessageId = crypto.randomUUID();
@@ -9154,6 +9266,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
                 text_content: visibleText,
                 thinking_content: fullThinking || null,
                 code_snapshot: fullCode || null,
+                animation_duration_seconds: motionDurationSeconds,
                 position: assistantPosition,
                 is_active: true,
                 updated_at: new Date().toISOString(),
@@ -9165,6 +9278,8 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
                   extracted_questions: finalQuestions,
                   edit_position,
                   edited_from_message_id: editedFromMessageId,
+                  motion_duration_seconds: motionDurationSeconds,
+                  requested_duration_seconds: requested_motion_duration,
                   attachments: attachmentRows.map((a) => ({
                     id: a.id,
                     file_name: a.file_name,
@@ -9204,6 +9319,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
             assistant_message_id: assistantMessageId,
             user_message_id: userMessageId,
             edit_position,
+            duration_seconds: motionDurationSeconds,
           });
 
           return res.end();
