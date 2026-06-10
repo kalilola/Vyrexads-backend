@@ -8966,7 +8966,6 @@ async function buildMotionAdCompanyStrategyContext(params: {
   company_id?: string | null;
   selection?: MotionAdContextSelection;
 }) {
-
   const { owner_id } = params;
   const selection = normalizeMotionContextSelection(params.selection || {});
   let effectiveCompanyId = params.company_id ? String(params.company_id).trim() : null;
@@ -8988,7 +8987,6 @@ async function buildMotionAdCompanyStrategyContext(params: {
     cq.set("owner_id", `eq.${owner_id}`);
     cq.set("select", "*");
     cq.set("limit", "1");
-
     const companies = await safeSupabaseSelect<any>("companies", cq, "companies by owner_id");
     company = companies[0] || null;
     effectiveCompanyId = company?.id ? String(company.id) : effectiveCompanyId;
