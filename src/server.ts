@@ -8966,18 +8966,32 @@ async function buildMotionAdCompanyStrategyContext(params: {
   company_id?: string | null;
   selection?: MotionAdContextSelection;
 }) {
-  const { owner_id, company_id } = params;
+
+  const { owner_id } = params;
   const selection = normalizeMotionContextSelection(params.selection || {});
+  let effectiveCompanyId = params.company_id ? String(params.company_id).trim() : null;
 
   let company: any = null;
-  if (company_id) {
+
+  if (effectiveCompanyId) {
     const cq = new URLSearchParams();
     cq.set("owner_id", `eq.${owner_id}`);
-    cq.set("id", `eq.${company_id}`);
+    cq.set("id", `eq.${effectiveCompanyId}`);
     cq.set("select", "*");
     cq.set("limit", "1");
-    const companies = await safeSupabaseSelect<any>("companies", cq, "companies");
+    const companies = await safeSupabaseSelect<any>("companies", cq, "companies by id");
     company = companies[0] || null;
+  }
+
+  if (!company) {
+    const cq = new URLSearchParams();
+    cq.set("owner_id", `eq.${owner_id}`);
+    cq.set("select", "*");
+    cq.set("limit", "1");
+
+    const companies = await safeSupabaseSelect<any>("companies", cq, "companies by owner_id");
+    company = companies[0] || null;
+    effectiveCompanyId = company?.id ? String(company.id) : effectiveCompanyId;
   }
 
   const uploadedFilesQuery = new URLSearchParams();
@@ -8985,16 +8999,16 @@ async function buildMotionAdCompanyStrategyContext(params: {
   uploadedFilesQuery.set("select", "*");
   uploadedFilesQuery.set("limit", "80");
   uploadedFilesQuery.set("order", "created_at.desc");
-  if (company_id) uploadedFilesQuery.set("entity_id", `eq.${company_id}`);
+  if (effectiveCompanyId) uploadedFilesQuery.set("entity_id", `eq.${effectiveCompanyId}`);
   uploadedFilesQuery.set(
     "context",
     "in.(company_logo,company_visual,company_info,company_font,company_product,company_charte,company_charter,brand_charter,brand_asset)"
   );
   const companyFiles = await safeSupabaseSelect<any>("uploaded_files", uploadedFilesQuery, "uploaded_files");
 
-  const strategyTargets = await selectRowsForOwnerCompany("strategy_targets", owner_id, company_id);
-  const strategyObjectives = await selectRowsForOwnerCompany("strategy_objectives", owner_id, company_id);
-  const strategyCompetitors = await selectRowsForOwnerCompany("strategy_competitors", owner_id, company_id);
+  const strategyTargets = await selectRowsForOwnerCompany("strategy_targets", owner_id, effectiveCompanyId);
+  const strategyObjectives = await selectRowsForOwnerCompany("strategy_objectives", owner_id, effectiveCompanyId);
+  const strategyCompetitors = await selectRowsForOwnerCompany("strategy_competitors", owner_id, effectiveCompanyId);
 
   const options = {
     personas: [] as MotionAdContextOption[],
@@ -9119,7 +9133,7 @@ async function buildMotionAdCompanyStrategyContext(params: {
   };
 
   return {
-    company_id: company_id || null,
+    company_id: effectiveCompanyId || null,
     company_identity_and_brand: company ? compactCompanyForMotionContext(company) : null,
     company_brand_files: companyFiles,
     strategy: {
@@ -9177,7 +9191,7 @@ app.get("/api/motion-ad/context", requireAuth, async (req, res) => {
     return res.json({
       ok: true,
       owner_id,
-      company_id,
+      company_id: context.company_id,
       options: context.options,
       context,
     });
@@ -9689,12 +9703,16 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
 
   try {
     const currentSession = await getMotionAdSession(owner_id, session_id);
-    const context_company_id = request_company_id || currentSession?.company_id || null;
+    const requestedContextCompanyId = request_company_id || currentSession?.company_id || null;
+
     const motionCompanyStrategyContext = await buildMotionAdCompanyStrategyContext({
       owner_id,
-      company_id: context_company_id,
+      company_id: requestedContextCompanyId,
       selection: motion_context_selection,
     });
+
+    const context_company_id =
+      motionCompanyStrategyContext.company_id || requestedContextCompanyId;
     const systemForClaude = `${system}${buildMotionAdSystemContextAppendix(motionCompanyStrategyContext)}
 
 CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format || "non précisé"}, durée demandée = ${requested_motion_duration || requested_duration_seconds || "non précisée"} secondes. Le bloc [META], const DURATION et window.__VYREXADS_DURATION__ doivent utiliser cette durée exacte si elle est précisée.`;
