@@ -8499,524 +8499,6 @@ function normalizeCompanyTargetClientBenefits(
     );
 }
 
-
-
-type MotionCompanyStrategySelection = {
-  targetIds?: string[];
-  targetNames?: string[];
-  personaIds?: string[];
-  personaNames?: string[];
-  marketingAngleNames?: string[];
-  targetClientNames?: string[];
-  competitorIds?: string[];
-  competitorNames?: string[];
-  objectiveIds?: string[];
-  objectiveNames?: string[];
-  includeTargetSolutions?: boolean;
-  includeTargetNeedsMotivations?: boolean;
-  includeTargetPainPoints?: boolean;
-  includeTargetObjections?: boolean;
-  includeCompetitors?: boolean;
-};
-
-const COMPANY_FILE_CONTEXTS_FOR_CLAUDE = [
-  "company_logo",
-  "company_visual",
-  "company_font",
-  "company_info",
-  "company_product",
-  "company_brand",
-  "company_charter",
-  "company_guideline",
-];
-
-const COMPANY_SOCIAL_KEY_REGEX = /(social|sociaux|réseau|reseau|facebook|instagram|linkedin|tiktok|twitter|x_|youtube|pinterest|snapchat)/i;
-const COMPANY_CHARTER_KEY_REGEX = /(charte|brand|branding|visual|visuel|logo|color|couleur|font|police|typograph|tone|ton|voice|voix|style|guideline|identity|identité|identite)/i;
-
-function normalizeSelectionStringArray(value: any) {
-  return asArray(value)
-    .map((item) => String(item || "").trim())
-    .filter(Boolean);
-}
-
-function normalizeMotionCompanyStrategySelection(value: any): MotionCompanyStrategySelection {
-  const raw = asObject(value);
-  return {
-    targetIds: normalizeSelectionStringArray(raw.targetIds ?? raw.target_ids),
-    targetNames: normalizeSelectionStringArray(raw.targetNames ?? raw.target_names),
-    personaIds: normalizeSelectionStringArray(raw.personaIds ?? raw.persona_ids),
-    personaNames: normalizeSelectionStringArray(raw.personaNames ?? raw.persona_names),
-    marketingAngleNames: normalizeSelectionStringArray(raw.marketingAngleNames ?? raw.marketing_angle_names),
-    targetClientNames: normalizeSelectionStringArray(raw.targetClientNames ?? raw.target_client_names),
-    competitorIds: normalizeSelectionStringArray(raw.competitorIds ?? raw.competitor_ids),
-    competitorNames: normalizeSelectionStringArray(raw.competitorNames ?? raw.competitor_names),
-    objectiveIds: normalizeSelectionStringArray(raw.objectiveIds ?? raw.objective_ids),
-    objectiveNames: normalizeSelectionStringArray(raw.objectiveNames ?? raw.objective_names),
-    includeTargetSolutions: raw.includeTargetSolutions !== false,
-    includeTargetNeedsMotivations: raw.includeTargetNeedsMotivations !== false,
-    includeTargetPainPoints: raw.includeTargetPainPoints !== false,
-    includeTargetObjections: raw.includeTargetObjections === true,
-    includeCompetitors: raw.includeCompetitors === true,
-  };
-}
-
-async function supabaseSelectSafe<T = any>(table: string, query: URLSearchParams, label?: string) {
-  try {
-    return await supabaseSelect<T>(table, query);
-  } catch (e: any) {
-    console.warn(`[motion-ad][context][skip] ${label || table}:`, e?.message || e);
-    return [] as T[];
-  }
-}
-
-function buildOwnerCompanyQuery(owner_id: string, company_id?: string | null, limit = 200) {
-  const q = new URLSearchParams();
-  q.set("owner_id", `eq.${owner_id}`);
-  if (company_id) q.set("company_id", `eq.${company_id}`);
-  q.set("select", "*");
-  q.set("limit", String(limit));
-  return q;
-}
-
-async function selectOwnerCompanyTableSafe(table: string, owner_id: string, company_id?: string | null, limit = 200) {
-  if (company_id) {
-    const withCompany = await supabaseSelectSafe<any>(
-      table,
-      buildOwnerCompanyQuery(owner_id, company_id, limit),
-      `${table} owner_id+company_id`
-    );
-    if (withCompany.length) return withCompany;
-  }
-
-  const q = new URLSearchParams();
-  q.set("owner_id", `eq.${owner_id}`);
-  q.set("select", "*");
-  q.set("limit", String(limit));
-  return await supabaseSelectSafe<any>(table, q, `${table} owner_id`);
-}
-
-function compactJsonForClaude(value: any, maxChars = 140_000) {
-  const text = JSON.stringify(value ?? {}, null, 2);
-  if (text.length <= maxChars) return text;
-  return `${text.slice(0, maxChars)}\n/* CONTEXTE TRONQUÉ: ${text.length - maxChars} caractères retirés */`;
-}
-
-function withoutSocialNetworkFields(row: any) {
-  const source = asObject(row);
-  const out: Json = {};
-
-  for (const [key, value] of Object.entries(source)) {
-    if (COMPANY_SOCIAL_KEY_REGEX.test(key)) continue;
-    out[key] = value;
-  }
-
-  return out;
-}
-
-function pickKeysMatching(row: any, regex: RegExp) {
-  const source = asObject(row);
-  const out: Json = {};
-
-  for (const [key, value] of Object.entries(source)) {
-    if (regex.test(key)) out[key] = value;
-  }
-
-  return out;
-}
-
-function uniqueByStableKey(rows: any[]) {
-  const seen = new Set<string>();
-  const out: any[] = [];
-
-  for (const row of rows) {
-    const key = String(row?.id ?? row?.name ?? row?.targetClient ?? row?.title ?? JSON.stringify(row));
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(row);
-  }
-
-  return out;
-}
-
-function getComparableValues(row: any) {
-  const raw = asObject(row);
-  return [
-    raw.id,
-    raw.name,
-    raw.title,
-    raw.label,
-    raw.targetClient,
-    raw.target_client,
-    raw.client,
-    raw.segment,
-    raw.competitor_id,
-    raw.objective_id,
-  ]
-    .map((value) => String(value ?? "").trim())
-    .filter(Boolean);
-}
-
-function isSelectedByValues(row: any, ids?: string[], names?: string[]) {
-  const idSet = new Set(normalizeSelectionStringArray(ids));
-  const nameSet = new Set(normalizeSelectionStringArray(names));
-
-  if (!idSet.size && !nameSet.size) return true;
-
-  const values = getComparableValues(row);
-  return values.some((value) => idSet.has(value) || nameSet.has(value));
-}
-
-function filterRowsBySelection(rows: any[], ids?: string[], names?: string[]) {
-  const hasSelection = normalizeSelectionStringArray(ids).length > 0 || normalizeSelectionStringArray(names).length > 0;
-  if (!hasSelection) return rows;
-  return rows.filter((row) => isSelectedByValues(row, ids, names));
-}
-
-function extractCompanyMarketingAngles(company: any) {
-  const raw = asObject(company);
-  return normalizeCompanyMarketingAngles(
-    raw.marketingAngles ??
-      raw.marketing_angles ??
-      raw.offerMarketingAngles ??
-      raw.offer_marketing_angles ??
-      raw.positioningMarketingAngles ??
-      raw.positioning_marketing_angles ??
-      raw.saasMarketingAngles ??
-      raw.saas_marketing_angles ??
-      raw.subProblemsMarketingAngles ??
-      raw.sub_problems_marketing_angles ??
-      raw.positioning?.marketingAngles ??
-      raw.offerPositioning?.marketingAngles ??
-      []
-  );
-}
-
-function extractCompanyTargetClientBenefits(company: any) {
-  const raw = asObject(company);
-  return normalizeCompanyTargetClientBenefits(
-    raw.targetClientBenefits ??
-      raw.target_client_benefits ??
-      raw.clientsTargetsBenefits ??
-      raw.clients_targets_benefits ??
-      raw.clientBenefits ??
-      raw.client_benefits ??
-      raw.positioning?.targetClientBenefits ??
-      raw.offerPositioning?.targetClientBenefits ??
-      []
-  );
-}
-
-function extractJsonArrayFromRows(rows: any[], keys: string[]) {
-  const out: any[] = [];
-
-  for (const row of rows) {
-    const raw = asObject(row);
-    for (const key of keys) {
-      const value = raw[key];
-      if (Array.isArray(value)) out.push(...value);
-    }
-  }
-
-  return out;
-}
-
-function cleanTargetForSelection(target: any, selection: MotionCompanyStrategySelection) {
-  const raw = asObject(target);
-  const next: Json = { ...raw };
-
-  if (!selection.includeTargetSolutions) {
-    delete next.solutions;
-    delete next.proposedSolutions;
-    delete next.proposed_solutions;
-  }
-
-  if (!selection.includeTargetNeedsMotivations) {
-    delete next.needsMotivations;
-    delete next.needs_motivations;
-    delete next.motivations;
-  }
-
-  if (!selection.includeTargetPainPoints) {
-    delete next.painPoints;
-    delete next.pain_points;
-    delete next.problems;
-    delete next.douleurs;
-  }
-
-  if (!selection.includeTargetObjections) {
-    delete next.objections;
-    delete next.counterObjections;
-    delete next.counter_objections;
-  }
-
-  const personas = asArray(raw.personas);
-  const hasPersonaSelection = Boolean(selection.personaIds?.length || selection.personaNames?.length);
-  if (personas.length && hasPersonaSelection) {
-    next.personas = personas.filter((persona) =>
-      isSelectedByValues(persona, selection.personaIds, selection.personaNames)
-    );
-  }
-
-  return next;
-}
-
-async function getMotionAdSession(owner_id: string, session_id: string) {
-  const q = new URLSearchParams();
-  q.set("owner_id", `eq.${owner_id}`);
-  q.set("id", `eq.${session_id}`);
-  q.set("select", "*");
-  q.set("limit", "1");
-
-  const rows = await supabaseSelectSafe<any>("motion_ad_sessions", q, "motion_ad_sessions session");
-  return rows[0] || null;
-}
-
-async function getMotionCompanyStrategyRawContext(owner_id: string, company_id?: string | null) {
-  let company: any = null;
-
-  if (company_id) {
-    const companyById = new URLSearchParams();
-    companyById.set("owner_id", `eq.${owner_id}`);
-    companyById.set("id", `eq.${company_id}`);
-    companyById.set("select", "*");
-    companyById.set("limit", "1");
-    company = (await supabaseSelectSafe<any>("companies", companyById, "companies by id"))[0] || null;
-  }
-
-  if (!company) {
-    const companyByOwner = new URLSearchParams();
-    companyByOwner.set("owner_id", `eq.${owner_id}`);
-    companyByOwner.set("select", "*");
-    companyByOwner.set("order", "updated_at.desc");
-    companyByOwner.set("limit", "1");
-    company = (await supabaseSelectSafe<any>("companies", companyByOwner, "companies by owner"))[0] || null;
-
-    if (!company) {
-      const companyByOwnerFallback = new URLSearchParams();
-      companyByOwnerFallback.set("owner_id", `eq.${owner_id}`);
-      companyByOwnerFallback.set("select", "*");
-      companyByOwnerFallback.set("limit", "1");
-      company =
-        (await supabaseSelectSafe<any>("companies", companyByOwnerFallback, "companies by owner fallback"))[0] ||
-        null;
-    }
-  }
-
-  const effectiveCompanyId = String(company_id || company?.id || "").trim() || null;
-
-  const filesQuery = new URLSearchParams();
-  filesQuery.set("owner_id", `eq.${owner_id}`);
-  if (effectiveCompanyId) filesQuery.set("entity_id", `eq.${effectiveCompanyId}`);
-  filesQuery.set("context", `in.(${COMPANY_FILE_CONTEXTS_FOR_CLAUDE.join(",")})`);
-  filesQuery.set("select", "*");
-  filesQuery.set("limit", "80");
-  const companyFiles = await supabaseSelectSafe<any>("uploaded_files", filesQuery, "uploaded_files company contexts");
-
-  const strategyRows = [
-    ...(await selectOwnerCompanyTableSafe("strategy", owner_id, effectiveCompanyId, 20)),
-    ...(await selectOwnerCompanyTableSafe("strategies", owner_id, effectiveCompanyId, 20)),
-  ];
-
-  const targetRows = [
-    ...(await selectOwnerCompanyTableSafe("strategy_targets", owner_id, effectiveCompanyId, 200)),
-    ...(await selectOwnerCompanyTableSafe("strategy_targets_rows", owner_id, effectiveCompanyId, 200)),
-    ...extractJsonArrayFromRows(strategyRows, ["targets", "strategy_targets", "ciblage", "targeting"]),
-  ];
-
-  const objectiveRows = [
-    ...(await selectOwnerCompanyTableSafe("strategy_objectives", owner_id, effectiveCompanyId, 100)),
-    ...(await selectOwnerCompanyTableSafe("strategy_smart_objectives", owner_id, effectiveCompanyId, 100)),
-    ...extractJsonArrayFromRows(strategyRows, ["objectives", "strategy_objectives", "smartObjectives", "smart_objectives"]),
-  ];
-
-  const competitorRows = [
-    ...(await selectOwnerCompanyTableSafe("strategy_competitors", owner_id, effectiveCompanyId, 100)),
-    ...(await selectOwnerCompanyTableSafe("competitors", owner_id, effectiveCompanyId, 100)),
-    ...extractJsonArrayFromRows(strategyRows, ["competitors", "strategy_competitors", "observedCompetitors", "observed_competitors"]),
-  ];
-
-  return {
-    company,
-    company_id: effectiveCompanyId,
-    companyFiles,
-    strategyRows,
-    targets: uniqueByStableKey(targetRows),
-    objectives: uniqueByStableKey(objectiveRows),
-    competitors: uniqueByStableKey(competitorRows),
-  };
-}
-
-async function buildMotionCompanyStrategyContext(params: {
-  owner_id: string;
-  company_id?: string | null;
-  selection?: any;
-}) {
-  const selection = normalizeMotionCompanyStrategySelection(params.selection);
-  const raw = await getMotionCompanyStrategyRawContext(params.owner_id, params.company_id);
-  const company = raw.company || {};
-
-  const companyMarketingAngles = extractCompanyMarketingAngles(company);
-  const companyTargetClientBenefits = extractCompanyTargetClientBenefits(company);
-
-  const selectedMarketingAngles = filterRowsBySelection(
-    companyMarketingAngles,
-    undefined,
-    selection.marketingAngleNames
-  );
-  const selectedTargetClientBenefits = filterRowsBySelection(
-    companyTargetClientBenefits,
-    undefined,
-    selection.targetClientNames
-  );
-  const selectedTargets = filterRowsBySelection(raw.targets, selection.targetIds, selection.targetNames).map((target) =>
-    cleanTargetForSelection(target, selection)
-  );
-  const selectedObjectives = filterRowsBySelection(raw.objectives, selection.objectiveIds, selection.objectiveNames);
-  const selectedCompetitors = selection.includeCompetitors
-    ? filterRowsBySelection(raw.competitors, selection.competitorIds, selection.competitorNames)
-    : [];
-
-  return {
-    generated_at: new Date().toISOString(),
-    owner_id: params.owner_id,
-    company_id: raw.company_id,
-    selection,
-    has_company: Boolean(raw.company),
-    company_identity_without_social_networks: withoutSocialNetworkFields(company),
-    company_brand_charter: pickKeysMatching(company, COMPANY_CHARTER_KEY_REGEX),
-    company_files: raw.companyFiles.map((file) => ({
-      id: file.id,
-      file_name: file.file_name ?? file.name ?? null,
-      context: file.context ?? null,
-      mime_type: file.mime_type ?? file.type ?? null,
-      bucket: file.bucket ?? null,
-      storage_path: file.storage_path ?? file.path ?? null,
-      public_url: file.public_url ?? file.url ?? null,
-    })),
-    offer_positioning_selected: {
-      marketing_angles: selectedMarketingAngles,
-      target_client_benefits: selectedTargetClientBenefits,
-    },
-    strategy_selected: {
-      targets: selectedTargets,
-      objectives_smart: selectedObjectives,
-      competitors_observed: selectedCompetitors,
-    },
-    options_for_front: {
-      marketing_angles: companyMarketingAngles,
-      target_client_benefits: companyTargetClientBenefits,
-      strategy_targets: raw.targets,
-      strategy_objectives: raw.objectives,
-      strategy_competitors: raw.competitors,
-      company_files: raw.companyFiles,
-    },
-  };
-}
-
-function buildClaudeCompanyStrategyContextBlock(context: any) {
-  return {
-    type: "text",
-    text:
-      "CONTEXTE ENTREPRISE + STRATÉGIE VYREXADS À UTILISER POUR CETTE ANIMATION. " +
-      "Ces informations viennent de la base de données du SaaS. Respecte les sélections faites dans l'interface. " +
-      "Ne réinvente pas les informations manquantes.\n\n" +
-      compactJsonForClaude(context),
-  };
-}
-
-async function downloadStorageRowFile(row: any) {
-  if (!supabaseAdmin) throw new Error("Missing Supabase admin client");
-
-  const bucket = String(row.bucket || "app-files");
-  const storagePath = String(row.storage_path || row.path || "");
-  if (!storagePath) throw new Error(`Missing storage_path for ${row.file_name || row.name || row.id}`);
-
-  const { data, error } = await supabaseAdmin.storage.from(bucket).download(storagePath);
-  if (error) throw new Error(`Storage download failed for ${row.file_name || row.name || row.id}: ${error.message}`);
-
-  return Buffer.from(await data.arrayBuffer());
-}
-
-async function buildClaudeCompanyFileBlocks(rows: any[]) {
-  const blocks: any[] = [];
-  if (!rows.length) return blocks;
-
-  blocks.push({
-    type: "text",
-    text:
-      "Voici les fichiers liés à l'entreprise dans Vyrexads (logo, charte, visuels, polices, infos produit). " +
-      "Utilise-les pour respecter l'identité visuelle quand ils sont exploitables.",
-  });
-
-  for (const row of rows.slice(0, 12)) {
-    const mimeType = String(row.mime_type || row.type || "application/octet-stream");
-    const fileName = String(row.file_name || row.name || "fichier entreprise");
-
-    try {
-      if (CLAUDE_IMAGE_MIME_TYPES.has(mimeType) && (row.storage_path || row.path)) {
-        const fileBuffer = await downloadStorageRowFile(row);
-        blocks.push({
-          type: "image",
-          source: {
-            type: "base64",
-            media_type: mimeType,
-            data: fileBuffer.toString("base64"),
-          },
-        });
-        blocks.push({ type: "text", text: `Fichier entreprise image : ${fileName} (${row.context || "contexte non précisé"})` });
-        continue;
-      }
-
-      if ((CLAUDE_TEXT_MIME_TYPES.has(mimeType) || fileName.toLowerCase().endsWith(".svg")) && (row.storage_path || row.path)) {
-        const fileBuffer = await downloadStorageRowFile(row);
-        blocks.push({
-          type: "text",
-          text:
-            `Fichier entreprise : ${fileName}\n` +
-            `Contexte : ${row.context || "non précisé"}\n` +
-            `Type : ${mimeType}\n\n` +
-            `Contenu :\n\`\`\`\n${fileBuffer.toString("utf8").slice(0, 80_000)}\n\`\`\``,
-        });
-        continue;
-      }
-    } catch (e: any) {
-      console.warn("[motion-ad][context][file skip]", e?.message || e);
-    }
-
-    blocks.push({
-      type: "text",
-      text:
-        `Fichier entreprise non injecté en binaire : ${fileName}\n` +
-        `Contexte : ${row.context || "non précisé"}\n` +
-        `Type : ${mimeType}\n` +
-        `URL publique : ${row.public_url || row.url || "non disponible"}`,
-    });
-  }
-
-  return blocks;
-}
-
-const MOTION_COMPANY_STRATEGY_SYSTEM_ADDON = `
-============================================================
-CONTEXTE ENTREPRISE + STRATÉGIE VYREXADS
-========================================
-
-Tu peux recevoir un bloc JSON "CONTEXTE ENTREPRISE + STRATÉGIE VYREXADS" injecté dans le dernier message utilisateur.
-Ce bloc vient de la base de données Vyrexads et peut contenir :
-- l'identité entreprise, sans la partie réseaux sociaux ;
-- la charte de marque et les fichiers liés à l'entreprise ;
-- le positionnement de l'offre sélectionné : sous-problèmes résolus / angles marketing et clients cibles, problèmes initiaux & bénéfices ;
-- la stratégie sélectionnée : ciblage, personas, solutions proposées, besoins / motivations, problèmes / douleurs, objectifs SMART ;
-- les concurrents observés sélectionnés.
-
-Règles d'utilisation :
-- Utilise ce contexte pour rendre l'animation plus précise, plus cohérente avec la marque et plus alignée avec la stratégie.
-- Respecte strictement les éléments sélectionnés dans le bloc contextuel ; ne mélange pas avec des cibles ou angles non sélectionnés si une sélection existe.
-- N'invente jamais une information entreprise ou stratégie absente.
-- Si des concurrents observés sont présents, demande explicitement à l'utilisateur s'il veut les prendre en compte avant de positionner l'animation contre eux, sauf si l'utilisateur l'a déjà demandé dans son message.
-- Si le contexte est incomplet, continue le flow habituel et pose seulement les questions utiles.
-`;
-
 app.post("/api/company/marketing-angle-suggestions", requireAuth, async (req, res) => {
   try {
     if (!ANTHROPIC_API_KEY) {
@@ -9315,6 +8797,396 @@ function motionDbMessagesToAnthropicMessages(rows: MotionAdDbMessage[]): MotionA
     });
 }
 
+
+type MotionAdContextOption = {
+  id: string;
+  label: string;
+  sub?: string;
+  source?: string;
+  payload?: any;
+};
+
+type MotionAdContextSelection = {
+  personas?: string[];
+  solutions?: string[];
+  needs?: string[];
+  painPoints?: string[];
+  pain_points?: string[];
+  includeCompetitors?: boolean;
+  include_competitors?: boolean;
+  competitors?: string[];
+  selected?: Record<string, any>;
+  [key: string]: any;
+};
+
+function normalizeMotionContextSelection(value: any): MotionAdContextSelection {
+  const raw = asObject(value);
+  const ids = (v: any) => asArray(v).map((item) => String(item || "").trim()).filter(Boolean);
+
+  return {
+    ...raw,
+    personas: ids(raw.personas),
+    solutions: ids(raw.solutions),
+    needs: ids(raw.needs),
+    painPoints: ids(raw.painPoints ?? raw.pain_points),
+    includeCompetitors: Boolean(raw.includeCompetitors ?? raw.include_competitors),
+    competitors: ids(raw.competitors),
+    selected: asObject(raw.selected),
+  };
+}
+
+function motionContextOption(prefix: string, label: any, sub: any, source: string, payload: any): MotionAdContextOption | null {
+  const cleanLabel = String(label || "").trim();
+  if (!cleanLabel) return null;
+
+  const cleanSub = String(sub || "").trim();
+  const id = `${prefix}_${hashJson({ label: cleanLabel, source, payload }).slice(0, 14)}`;
+
+  return {
+    id,
+    label: cleanLabel,
+    sub: cleanSub,
+    source,
+    payload,
+  };
+}
+
+function pushUniqueMotionContextOption(target: MotionAdContextOption[], option: MotionAdContextOption | null) {
+  if (!option) return;
+  const key = `${option.source}::${option.label}`.toLowerCase();
+  if (target.some((item) => `${item.source}::${item.label}`.toLowerCase() === key)) return;
+  target.push(option);
+}
+
+function parseJsonish(value: any): any {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return value;
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function arrayFromPossibleFields(row: any, keys: string[]) {
+  const out: any[] = [];
+  const raw = asObject(row);
+
+  for (const key of keys) {
+    const parsed = parseJsonish(raw[key]);
+    if (Array.isArray(parsed)) out.push(...parsed);
+    else if (parsed && typeof parsed === "object") out.push(parsed);
+  }
+
+  return out;
+}
+
+function compactCompanyForMotionContext(company: any) {
+  const raw = asObject(company);
+  const blockedKeys = new Set([
+    "socials",
+    "social_links",
+    "socialNetworks",
+    "social_networks",
+    "facebook",
+    "instagram",
+    "linkedin",
+    "tiktok",
+    "twitter",
+    "x",
+    "threads",
+  ]);
+
+  const out: Json = {};
+
+  for (const [key, value] of Object.entries(raw)) {
+    const lower = key.toLowerCase();
+    if (blockedKeys.has(key) || lower.includes("social") || lower.includes("réseau") || lower.includes("reseau")) {
+      continue;
+    }
+
+    if (value === null || value === undefined || value === "") continue;
+    out[key] = value;
+  }
+
+  return out;
+}
+
+async function safeSupabaseSelect<T = any>(table: string, query: URLSearchParams, label?: string) {
+  try {
+    return await supabaseSelect<T>(table, query);
+  } catch (e: any) {
+    console.warn(`[motion-ad][context][skip] ${label || table}:`, e?.message || String(e));
+    return [] as T[];
+  }
+}
+
+async function selectRowsForOwnerCompany(table: string, owner_id: string, company_id?: string | null) {
+  if (company_id) {
+    const byCompany = new URLSearchParams();
+    byCompany.set("owner_id", `eq.${owner_id}`);
+    byCompany.set("company_id", `eq.${company_id}`);
+    byCompany.set("select", "*");
+    byCompany.set("limit", "200");
+
+    const rows = await safeSupabaseSelect(table, byCompany, `${table} by company_id`);
+    if (rows.length > 0) return rows;
+  }
+
+  const byOwner = new URLSearchParams();
+  byOwner.set("owner_id", `eq.${owner_id}`);
+  byOwner.set("select", "*");
+  byOwner.set("limit", "200");
+
+  const rows = await safeSupabaseSelect(table, byOwner, `${table} by owner_id`);
+  if (!company_id) return rows;
+
+  return rows.filter((row: any) => {
+    const rowCompanyId = row?.company_id || row?.companyId || row?.entity_id || row?.entityId;
+    return !rowCompanyId || String(rowCompanyId) === String(company_id);
+  });
+}
+
+async function getMotionAdSession(owner_id: string, session_id: string) {
+  const q = new URLSearchParams();
+  q.set("owner_id", `eq.${owner_id}`);
+  q.set("id", `eq.${session_id}`);
+  q.set("select", "*");
+  q.set("limit", "1");
+
+  const rows = await safeSupabaseSelect<any>("motion_ad_sessions", q, "motion_ad_sessions");
+  return rows[0] || null;
+}
+
+async function buildMotionAdCompanyStrategyContext(params: {
+  owner_id: string;
+  company_id?: string | null;
+  selection?: MotionAdContextSelection;
+}) {
+  const { owner_id, company_id } = params;
+  const selection = normalizeMotionContextSelection(params.selection || {});
+
+  let company: any = null;
+  if (company_id) {
+    const cq = new URLSearchParams();
+    cq.set("owner_id", `eq.${owner_id}`);
+    cq.set("id", `eq.${company_id}`);
+    cq.set("select", "*");
+    cq.set("limit", "1");
+    const companies = await safeSupabaseSelect<any>("companies", cq, "companies");
+    company = companies[0] || null;
+  }
+
+  const uploadedFilesQuery = new URLSearchParams();
+  uploadedFilesQuery.set("owner_id", `eq.${owner_id}`);
+  uploadedFilesQuery.set("select", "*");
+  uploadedFilesQuery.set("limit", "80");
+  uploadedFilesQuery.set("order", "created_at.desc");
+  if (company_id) uploadedFilesQuery.set("entity_id", `eq.${company_id}`);
+  uploadedFilesQuery.set(
+    "context",
+    "in.(company_logo,company_visual,company_info,company_font,company_product,company_charte,company_charter,brand_charter,brand_asset)"
+  );
+  const companyFiles = await safeSupabaseSelect<any>("uploaded_files", uploadedFilesQuery, "uploaded_files");
+
+  const strategyTargets = await selectRowsForOwnerCompany("strategy_targets", owner_id, company_id);
+  const strategyObjectives = await selectRowsForOwnerCompany("strategy_objectives", owner_id, company_id);
+  const strategyCompetitors = await selectRowsForOwnerCompany("strategy_competitors", owner_id, company_id);
+
+  const options = {
+    personas: [] as MotionAdContextOption[],
+    solutions: [] as MotionAdContextOption[],
+    needs: [] as MotionAdContextOption[],
+    painPoints: [] as MotionAdContextOption[],
+    competitors: [] as MotionAdContextOption[],
+    objectives: strategyObjectives,
+  };
+
+  const companyObj = asObject(company);
+  const companyTargetBenefits = arrayFromPossibleFields(companyObj, [
+    "targetClientBenefits",
+    "target_client_benefits",
+    "clientsCiblesProblemesBenefices",
+    "clients_cibles_problemes_benefices",
+  ]);
+
+  for (const item of companyTargetBenefits) {
+    const raw = asObject(item);
+    const label = raw.targetClient || raw.target_client || raw.client || raw.segment || raw.name || raw.title;
+    const sub = raw.description || raw.initialProblem || raw.initial_problem || raw.concreteBenefit || raw.concrete_benefit;
+    pushUniqueMotionContextOption(options.personas, motionContextOption("persona", label, sub, "company.targetClientBenefits", raw));
+    pushUniqueMotionContextOption(options.painPoints, motionContextOption("pain", raw.initialProblem || raw.initial_problem, label, "company.targetClientBenefits.initialProblem", raw));
+    pushUniqueMotionContextOption(options.needs, motionContextOption("need", raw.concreteBenefit || raw.concrete_benefit, label, "company.targetClientBenefits.concreteBenefit", raw));
+  }
+
+  const companyMarketingAngles = arrayFromPossibleFields(companyObj, [
+    "marketingAngles",
+    "marketing_angles",
+    "offerPositioning",
+    "offer_positioning",
+    "positioning",
+    "positionnement",
+    "subProblemsMarketingAngles",
+    "sub_problems_marketing_angles",
+  ]);
+
+  for (const item of companyMarketingAngles) {
+    const raw = asObject(item);
+    const label = raw.name || raw.title || raw.label || raw.angle || raw.value;
+    const sub = raw.description || raw.problem || raw.targetClient || raw.target_client;
+    pushUniqueMotionContextOption(options.solutions, motionContextOption("solution", label, sub, "company.marketingAngles", raw));
+  }
+
+  for (const target of strategyTargets) {
+    const rawTarget = asObject(target);
+    const targetLabel = rawTarget.name || rawTarget.title || rawTarget.label || rawTarget.description;
+    const targetSub = rawTarget.description || rawTarget.awarenessLevel || rawTarget.awareness_level;
+    pushUniqueMotionContextOption(options.personas, motionContextOption("target", targetLabel, targetSub, "strategy_targets", rawTarget));
+
+    const personas = arrayFromPossibleFields(rawTarget, ["personas", "persona", "target_personas"]);
+    for (const persona of personas) {
+      const raw = asObject(persona);
+      const label = raw.targetClient || raw.target_client || raw.name || raw.profession || raw.segment || targetLabel;
+      const sub = [raw.profession, raw.age, raw.location, raw.initialProblem || raw.initial_problem]
+        .filter(Boolean)
+        .join(" · ");
+      pushUniqueMotionContextOption(options.personas, motionContextOption("persona", label, sub, "strategy_targets.personas", { target: rawTarget, persona: raw }));
+    }
+
+    const solutionItems = [
+      ...arrayFromPossibleFields(rawTarget, [
+        "solutions",
+        "marketingAngles",
+        "marketing_angles",
+        "subProblemsMarketingAngles",
+        "sub_problems_marketing_angles",
+        "Sous-problèmes résolus / angles marketing",
+        "sousProblemesResolusAnglesMarketing",
+      ]),
+    ];
+    for (const item of solutionItems) {
+      const raw = typeof item === "string" ? { name: item } : asObject(item);
+      pushUniqueMotionContextOption(
+        options.solutions,
+        motionContextOption("solution", raw.name || raw.title || raw.label || raw.value, raw.description || targetLabel, "strategy_targets.solutions", { target: rawTarget, item: raw })
+      );
+    }
+
+    for (const item of arrayFromPossibleFields(rawTarget, ["needsMotivations", "needs_motivations", "needs", "motivations"])) {
+      const raw = typeof item === "string" ? { name: item } : asObject(item);
+      pushUniqueMotionContextOption(options.needs, motionContextOption("need", raw.name || raw.title || raw.label || raw.value, raw.description || targetLabel, "strategy_targets.needsMotivations", { target: rawTarget, item: raw }));
+    }
+
+    for (const item of arrayFromPossibleFields(rawTarget, ["painPoints", "pain_points", "problems", "problematiques", "objections"])) {
+      const raw = typeof item === "string" ? { name: item } : asObject(item);
+      pushUniqueMotionContextOption(options.painPoints, motionContextOption("pain", raw.name || raw.title || raw.label || raw.value, raw.description || targetLabel, "strategy_targets.painPoints", { target: rawTarget, item: raw }));
+    }
+  }
+
+  for (const competitor of strategyCompetitors) {
+    const raw = asObject(competitor);
+    const label = raw.name || raw.title || raw.competitor_name || raw.company_name || raw.website || raw.url;
+    const sub = raw.tagline || raw.description || raw.website || raw.url || raw.positioning;
+    pushUniqueMotionContextOption(options.competitors, motionContextOption("competitor", label, sub, "strategy_competitors", raw));
+
+    for (const item of arrayFromPossibleFields(raw, ["competitors", "items", "data"])) {
+      const nested = asObject(item);
+      pushUniqueMotionContextOption(
+        options.competitors,
+        motionContextOption("competitor", nested.name || nested.title || nested.website || nested.url, nested.description || nested.tagline || nested.website || nested.url, "strategy_competitors.items", nested)
+      );
+    }
+  }
+
+  const optionById = new Map<string, MotionAdContextOption>();
+  for (const section of ["personas", "solutions", "needs", "painPoints", "competitors"] as const) {
+    for (const option of options[section]) optionById.set(option.id, option);
+  }
+
+  const selectById = (ids: string[]) => ids.map((id) => optionById.get(id)).filter(Boolean);
+  const selectedFromFront = asObject(selection.selected);
+  const selected = {
+    personas: selectById(selection.personas || []).concat(asArray(selectedFromFront.personas)),
+    solutions: selectById(selection.solutions || []).concat(asArray(selectedFromFront.solutions)),
+    needs: selectById(selection.needs || []).concat(asArray(selectedFromFront.needs)),
+    painPoints: selectById(selection.painPoints || selection.pain_points || []).concat(asArray(selectedFromFront.painPoints || selectedFromFront.pain_points)),
+    competitors: (selection.includeCompetitors || selection.include_competitors)
+      ? selectById(selection.competitors || []).concat(asArray(selectedFromFront.competitors))
+      : [],
+  };
+
+  return {
+    company_id: company_id || null,
+    company_identity_and_brand: company ? compactCompanyForMotionContext(company) : null,
+    company_brand_files: companyFiles,
+    strategy: {
+      targets: strategyTargets,
+      objectives_smart: strategyObjectives,
+      competitors_observed: strategyCompetitors,
+    },
+    options,
+    selection,
+    selected,
+  };
+}
+
+function buildMotionAdSystemContextAppendix(context: any) {
+  const json = JSON.stringify(context, null, 2).slice(0, 120_000);
+
+  return `
+
+============================================================
+INFORMATIONS ENTREPRISE & STRATÉGIE VYREXADS
+============================================================
+
+Tu reçois ci-dessous le contexte entreprise et stratégie récupéré depuis la base de données Vyrexads.
+Tu dois l'utiliser comme source prioritaire pour comprendre le SaaS, l'offre, la cible, la charte et le positionnement.
+
+Règles d'utilisation :
+- Utilise la page Identité entreprise sauf les réseaux sociaux.
+- Utilise la charte, les fichiers et URLs d'assets de marque quand ils sont présents.
+- Pour le positionnement de l'offre, privilégie uniquement les éléments sélectionnés dans l'overlay : solutions, douleurs, besoins, personas.
+- Pour la stratégie, utilise le ciblage sélectionné dans l'overlay : personas, solutions proposées, besoins / motivations et problèmes / douleurs.
+- Les Objectifs SMART peuvent guider le message et le CTA.
+- Si des concurrents observés existent mais ne sont pas sélectionnés dans l'overlay, ne positionne pas l'ad contre eux automatiquement : demande d'abord si l'utilisateur veut les prendre en compte.
+- Si des concurrents sont sélectionnés, tu peux positionner l'ad face à eux et mettre en avant les différenciateurs.
+- Si une donnée manque ou est vide, fais une hypothèse simple et indique-la dans [RÉFLEXION].
+
+Contexte JSON Vyrexads :
+${json}`;
+}
+
+app.get("/api/motion-ad/context", requireAuth, async (req, res) => {
+  try {
+    const owner_id = String(req.query.owner_id || "").trim();
+    const company_id = req.query.company_id ? String(req.query.company_id).trim() : null;
+
+    if (!owner_id) {
+      return res.status(400).json({ ok: false, error: "Missing owner_id" });
+    }
+
+    const context = await buildMotionAdCompanyStrategyContext({
+      owner_id,
+      company_id,
+      selection: {},
+    });
+
+    return res.json({
+      ok: true,
+      owner_id,
+      company_id,
+      options: context.options,
+      context,
+    });
+  } catch (e: any) {
+    console.error("[motion-ad][context] error:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
 app.post("/api/motion-ad/sessions", requireAuth, async (req, res) => {
   try {
     const owner_id = String(req.body?.owner_id || "");
@@ -9406,34 +9278,6 @@ app.get("/api/motion-ad/messages", requireAuth, async (req, res) => {
   }
 });
 
-
-
-app.get("/api/motion-ad/company-strategy-context", requireAuth, async (req, res) => {
-  try {
-    const owner_id = String(req.query.owner_id || "").trim();
-    const company_id = req.query.company_id ? String(req.query.company_id).trim() : null;
-
-    if (!owner_id) {
-      return res.status(400).json({ ok: false, error: "Missing owner_id" });
-    }
-
-    const context = await buildMotionCompanyStrategyContext({
-      owner_id,
-      company_id,
-      selection: {},
-    });
-
-    return res.json({
-      ok: true,
-      context,
-      options: context.options_for_front,
-    });
-  } catch (e: any) {
-    console.error("[motion-ad][company-strategy-context] error:", e);
-    return res.status(500).json({ ok: false, error: e?.message || String(e) });
-  }
-});
-
 app.post("/api/motion-ad/upload", requireAuth, async (req, res) => {
   try {
     if (!supabaseAdmin) {
@@ -9503,6 +9347,8 @@ app.post("/api/motion-ad/upload", requireAuth, async (req, res) => {
 app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
   const owner_id = String(req.body?.owner_id || "");
   const session_id = String(req.body?.session_id || "");
+  const request_company_id = req.body?.company_id ? String(req.body.company_id).trim() : null;
+  const motion_context_selection = normalizeMotionContextSelection(req.body?.motion_context_selection || {});
   const user_text = String(req.body?.user_text || "");
   const attachment_ids = Array.isArray(req.body?.attachment_ids) ? req.body.attachment_ids : [];
   const question_answers = Array.isArray(req.body?.question_answers)
@@ -9511,10 +9357,6 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
   const requested_ad_format = String(req.body?.ad_format || "").trim();
   const requested_duration_seconds = Number(req.body?.duration_seconds || 0);
   const requested_motion_duration = normalizeMotionDurationSeconds(requested_duration_seconds);
-  const requested_company_id = req.body?.company_id ? String(req.body.company_id).trim() : "";
-  const company_strategy_selection = normalizeMotionCompanyStrategySelection(
-    req.body?.company_strategy_selection || req.body?.context_selection || {}
-  );
   const edit_position = parseOptionalPosition(req.body?.edit_position);
   const system = String(
     req.body?.system ||
@@ -9846,24 +9688,32 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
   };
 
   try {
-    const sessionRow = await getMotionAdSession(owner_id, session_id);
-    const effectiveCompanyId = requested_company_id || String(sessionRow?.company_id || "").trim();
-
-    const sessionPatch: Json = {
-      id: session_id,
+    const currentSession = await getMotionAdSession(owner_id, session_id);
+    const context_company_id = request_company_id || currentSession?.company_id || null;
+    const motionCompanyStrategyContext = await buildMotionAdCompanyStrategyContext({
       owner_id,
-      updated_at: new Date().toISOString(),
-    };
+      company_id: context_company_id,
+      selection: motion_context_selection,
+    });
+    const systemForClaude = `${system}${buildMotionAdSystemContextAppendix(motionCompanyStrategyContext)}
 
-    if (["9:16", "1:1", "16:9", "4:5"].includes(requested_ad_format)) {
-      sessionPatch.ad_format = requested_ad_format;
+CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format || "non précisé"}, durée demandée = ${requested_motion_duration || requested_duration_seconds || "non précisée"} secondes. Le bloc [META], const DURATION et window.__VYREXADS_DURATION__ doivent utiliser cette durée exacte si elle est précisée.`;
+
+    if (["9:16", "1:1", "16:9", "4:5"].includes(requested_ad_format) || context_company_id) {
+      await supabaseUpsert(
+        "motion_ad_sessions",
+        [
+          {
+            id: session_id,
+            owner_id,
+            ...(context_company_id ? { company_id: context_company_id } : {}),
+            ...(["9:16", "1:1", "16:9", "4:5"].includes(requested_ad_format) ? { ad_format: requested_ad_format } : {}),
+            updated_at: new Date().toISOString(),
+          },
+        ],
+        "id"
+      );
     }
-
-    if (effectiveCompanyId) {
-      sessionPatch.company_id = effectiveCompanyId;
-    }
-
-    await supabaseUpsert("motion_ad_sessions", [sessionPatch], "id");
 
     let userMessageId: string | null = null;
     let userMessagePosition: number | null = null;
@@ -9921,40 +9771,17 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       ? motionDbMessagesToAnthropicMessages(activeRows)
       : messages;
 
-    const companyStrategyContext = await buildMotionCompanyStrategyContext({
-      owner_id,
-      company_id: effectiveCompanyId,
-      selection: company_strategy_selection,
-    });
-    const companyStrategyBlocks = [buildClaudeCompanyStrategyContextBlock(companyStrategyContext)];
-    const companyFileBlocks = await buildClaudeCompanyFileBlocks(
-      companyStrategyContext.company_files || []
-    );
-
     const attachmentRows = await getMotionAdAttachmentsForSession(owner_id, session_id);
     const attachmentBlocks = await buildClaudeAttachmentBlocks(attachmentRows);
-    const allClaudeContextBlocks = [
-      ...companyStrategyBlocks,
-      ...companyFileBlocks,
-      ...attachmentBlocks,
-    ];
-    const anthropicMessages = injectAttachmentsIntoLastUserMessage(baseMessages, allClaudeContextBlocks);
+    const anthropicMessages = injectAttachmentsIntoLastUserMessage(baseMessages, attachmentBlocks);
 
-    console.log("[motion-ad][chat] context sent to Claude:", {
+    console.log("[motion-ad][chat] attachments sent to Claude:", {
       session_id,
-      company_id: effectiveCompanyId || null,
-      total_company_files: companyStrategyContext.company_files?.length || 0,
       total_attachments: attachmentRows.length,
-      image_blocks: allClaudeContextBlocks.filter((b) => b.type === "image").length,
-      text_blocks: allClaudeContextBlocks.filter((b) => b.type === "text").length,
+      image_blocks: attachmentBlocks.filter((b) => b.type === "image").length,
+      text_blocks: attachmentBlocks.filter((b) => b.type === "text").length,
     });
 
-
-    const systemForClaude = `${system}
-
-${MOTION_COMPANY_STRATEGY_SYSTEM_ADDON}
-
-CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format || "non précisé"}, durée demandée = ${requested_motion_duration || requested_duration_seconds || "non précisée"} secondes. Le bloc [META], const DURATION et window.__VYREXADS_DURATION__ doivent utiliser cette durée exacte si elle est précisée.`;
 
     const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -10121,12 +9948,12 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
                 full_prompt: {
                   system: systemForClaude,
                   base_system: system,
+                  company_id: context_company_id,
+                  motion_context_selection,
+                  motion_company_strategy_context: motionCompanyStrategyContext,
                   messages: anthropicMessages,
                   attachment_ids,
                   question_answers,
-                  company_id: effectiveCompanyId || null,
-                  company_strategy_selection,
-                  company_strategy_context: companyStrategyContext,
                   extracted_questions: finalQuestions,
                   edit_position,
                   edited_from_message_id: editedFromMessageId,
