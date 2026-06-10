@@ -8398,6 +8398,279 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 if (!ANTHROPIC_API_KEY) console.warn("[env] Missing ANTHROPIC_API_KEY");
 
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-4-8";
+const ANTHROPIC_COMPANY_MODEL =
+  process.env.ANTHROPIC_COMPANY_MODEL || ANTHROPIC_MODEL;
+
+// =========================================================
+// COMPANY — Suggestions IA d'angles marketing SaaS
+// =========================================================
+
+type CompanyMarketingAngleSuggestion = {
+  name: string;
+  description: string;
+  targetClient: string;
+};
+
+type CompanyTargetClientBenefitSuggestion = {
+  targetClient: string;
+  description: string;
+  initialProblem: string;
+  concreteBenefit: string;
+};
+
+function extractAnthropicText(message: any) {
+  return asArray(message?.content)
+    .map((block) => (block?.type === "text" ? String(block.text || "") : ""))
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function stripJsonFence(text: string) {
+  return String(text || "")
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
+
+function parseJsonObjectFromAiText(text: string) {
+  const cleaned = stripJsonFence(text);
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const first = cleaned.indexOf("{");
+    const last = cleaned.lastIndexOf("}");
+
+    if (first >= 0 && last > first) {
+      const candidate = cleaned.slice(first, last + 1);
+      try {
+        return JSON.parse(candidate);
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
+  }
+}
+
+function normalizeCompanyMarketingAngles(value: any): CompanyMarketingAngleSuggestion[] {
+  return asArray(value)
+    .map((item) => {
+      const raw = asObject(item);
+      return {
+        name: String(raw.name ?? raw.title ?? raw.value ?? "").trim(),
+        description: String(raw.description ?? raw.problem ?? "").trim(),
+        targetClient: String(
+          raw.targetClient ?? raw.target_client ?? raw.client ?? raw.segment ?? ""
+        ).trim(),
+      };
+    })
+    .filter((item) => item.name || item.description);
+}
+
+function normalizeCompanyTargetClientBenefits(
+  value: any
+): CompanyTargetClientBenefitSuggestion[] {
+  return asArray(value)
+    .map((item) => {
+      const raw = asObject(item);
+      return {
+        targetClient: String(
+          raw.targetClient ?? raw.target_client ?? raw.client ?? raw.segment ?? ""
+        ).trim(),
+        description: String(raw.description ?? raw.clientDescription ?? "").trim(),
+        initialProblem: String(
+          raw.initialProblem ?? raw.initial_problem ?? raw.problem ?? ""
+        ).trim(),
+        concreteBenefit: String(
+          raw.concreteBenefit ?? raw.concrete_benefit ?? raw.benefit ?? ""
+        ).trim(),
+      };
+    })
+    .filter(
+      (item) =>
+        item.targetClient ||
+        item.description ||
+        item.initialProblem ||
+        item.concreteBenefit
+    );
+}
+
+app.post("/api/company/marketing-angle-suggestions", requireAuth, async (req, res) => {
+  try {
+    if (!ANTHROPIC_API_KEY) {
+      return res.status(500).json({
+        ok: false,
+        error: "Missing ANTHROPIC_API_KEY in backend env",
+      });
+    }
+
+    const owner_id = String(req.body?.owner_id || "").trim();
+    const company_id = req.body?.company_id ? String(req.body.company_id) : null;
+    const company = asObject(req.body?.company || req.body?.payload?.company || {});
+
+    if (!owner_id) {
+      return res.status(400).json({ ok: false, error: "Missing owner_id" });
+    }
+
+    const existingMarketingAngles = normalizeCompanyMarketingAngles(
+      company.existingMarketingAngles ?? company.marketingAngles ?? []
+    );
+    const targetClientBenefits = normalizeCompanyTargetClientBenefits(
+      company.targetClientBenefits ?? []
+    );
+    const targetClientNames = targetClientBenefits
+      .map((item) => item.targetClient)
+      .filter(Boolean);
+
+    const contextForClaude = {
+      // Marque & description — sans localisation, comme demandé dans la tâche Notion.
+      brandName: company.brandName ?? "",
+      industry: company.industry ?? "",
+      shortDescription: company.shortDescription ?? "",
+      website: company.website ?? "",
+      socials: company.socials ?? [],
+      brandMessage: company.brandMessage ?? "",
+      brandValues: company.brandValues ?? "",
+      // Positionnement de l'offre.
+      businessModel: company.businessModel ?? "saas",
+      functioning: company.productsServices ?? company.functioning ?? "",
+      usp: company.usp ?? "",
+      mainProblem: company.saasMainProblem ?? company.mainProblem ?? "",
+      // Éléments déjà enregistrés pour éviter les doublons.
+      existingMarketingAngles,
+      targetClientBenefits,
+      allowedTargetClients: targetClientNames,
+    };
+
+    const systemPrompt = `Tu es un expert marketing SaaS B2B/B2C pour Vyrexads.
+
+Objectif : générer des suggestions d'angles marketing / sous-problèmes résolus pour la page Entreprise.
+
+Contraintes importantes :
+- Base-toi uniquement sur les informations fournies.
+- Ne réutilise pas les angles déjà présents.
+- Ne refais pas les mêmes idées que les clients cibles/problèmes initiaux/bénéfices déjà enregistrés.
+- Chaque angle doit être actionnable pour créer du contenu marketing ou publicitaire.
+- Si des clients cibles existent, le champ targetClient doit être exactement l'un des noms fournis dans allowedTargetClients, ou une chaîne vide si aucun client ne correspond.
+- Si aucun client cible exploitable n'existe, tu peux proposer 1 à 3 targetClientBenefits cohérents.
+- Réponds uniquement en JSON valide. Pas de Markdown, pas de texte autour.
+
+Format JSON obligatoire :
+{
+  "marketingAngles": [
+    {
+      "name": "Nom court de l'angle",
+      "description": "Description concrète du sous-problème et de l'intérêt marketing",
+      "targetClient": "Client cible exact ou chaîne vide"
+    }
+  ],
+  "targetClientBenefits": [
+    {
+      "targetClient": "Nom du client cible",
+      "description": "Description courte du segment",
+      "initialProblem": "Problème initial ressenti",
+      "concreteBenefit": "Bénéfice concret obtenu"
+    }
+  ]
+}`;
+
+    const userPrompt = `Voici le contexte entreprise/offre à analyser. Génère 3 à 6 nouveaux angles marketing pertinents.
+
+Contexte JSON :
+${JSON.stringify(contextForClaude, null, 2)}`;
+
+    const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: ANTHROPIC_COMPANY_MODEL,
+        max_tokens: 4096,
+        temperature: 0.45,
+        system: systemPrompt,
+        messages: [
+          {
+            role: "user",
+            content: userPrompt,
+          },
+        ],
+      }),
+    });
+
+    const anthropicText = await anthropicRes.text();
+
+    if (!anthropicRes.ok) {
+      console.error("[company][marketing-angle-suggestions] Claude error:", anthropicText);
+      return res.status(502).json({
+        ok: false,
+        error: "Claude request failed",
+        details: anthropicText,
+      });
+    }
+
+    let anthropicJson: any = null;
+    try {
+      anthropicJson = JSON.parse(anthropicText);
+    } catch {
+      return res.status(502).json({
+        ok: false,
+        error: "Claude returned invalid JSON envelope",
+        details: anthropicText,
+      });
+    }
+
+    const outputText = extractAnthropicText(anthropicJson);
+    const parsed = parseJsonObjectFromAiText(outputText);
+
+    if (!parsed || typeof parsed !== "object") {
+      return res.status(502).json({
+        ok: false,
+        error: "Claude output did not contain valid JSON",
+        details: outputText,
+      });
+    }
+
+    let marketingAngles = normalizeCompanyMarketingAngles(
+      parsed.marketingAngles ?? parsed.marketing_angles ?? parsed.suggestions ?? []
+    );
+    let generatedTargetClientBenefits = normalizeCompanyTargetClientBenefits(
+      parsed.targetClientBenefits ?? parsed.target_client_benefits ?? []
+    );
+
+    const allowedTargets = new Set([
+      ...targetClientNames,
+      ...generatedTargetClientBenefits.map((item) => item.targetClient),
+    ].filter(Boolean));
+
+    marketingAngles = marketingAngles.map((angle) => ({
+      ...angle,
+      targetClient:
+        angle.targetClient && allowedTargets.has(angle.targetClient)
+          ? angle.targetClient
+          : "",
+    }));
+
+    return res.json({
+      ok: true,
+      owner_id,
+      company_id,
+      marketingAngles,
+      targetClientBenefits: generatedTargetClientBenefits,
+      usage: anthropicJson?.usage ?? null,
+      model: anthropicJson?.model ?? ANTHROPIC_COMPANY_MODEL,
+    });
+  } catch (e: any) {
+    console.error("[company][marketing-angle-suggestions] error:", e);
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
 
 type MotionAdChatMessage = {
   role: "user" | "assistant";
