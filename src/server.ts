@@ -9018,7 +9018,14 @@ async function buildMotionAdCompanyStrategyContext(params: {
   };
 
   const companyObj = asObject(company);
-  const companyTargetBenefits = arrayFromPossibleFields(companyObj, [
+  const companyOffer = asObject(companyObj.offer);
+
+  const companyContext = {
+    ...companyObj,
+    ...companyOffer,
+  };
+
+  const companyTargetBenefits = arrayFromPossibleFields(companyContext, [
     "targetClientBenefits",
     "target_client_benefits",
     "clientsCiblesProblemesBenefices",
@@ -9034,7 +9041,7 @@ async function buildMotionAdCompanyStrategyContext(params: {
     pushUniqueMotionContextOption(options.needs, motionContextOption("need", raw.concreteBenefit || raw.concrete_benefit, label, "company.targetClientBenefits.concreteBenefit", raw));
   }
 
-  const companyMarketingAngles = arrayFromPossibleFields(companyObj, [
+  const companyMarketingAngles = arrayFromPossibleFields(companyContext, [
     "marketingAngles",
     "marketing_angles",
     "offerPositioning",
@@ -9171,33 +9178,6 @@ Contexte JSON Vyrexads :
 ${json}`;
 }
 
-app.get("/api/motion-ad/context", requireAuth, async (req, res) => {
-  try {
-    const owner_id = String(req.query.owner_id || "").trim();
-    const company_id = req.query.company_id ? String(req.query.company_id).trim() : null;
-
-    if (!owner_id) {
-      return res.status(400).json({ ok: false, error: "Missing owner_id" });
-    }
-
-    const context = await buildMotionAdCompanyStrategyContext({
-      owner_id,
-      company_id,
-      selection: {},
-    });
-
-    return res.json({
-      ok: true,
-      owner_id,
-      company_id: context.company_id,
-      options: context.options,
-      context,
-    });
-  } catch (e: any) {
-    console.error("[motion-ad][context] error:", e);
-    return res.status(500).json({ ok: false, error: e?.message || String(e) });
-  }
-});
 
 app.post("/api/motion-ad/sessions", requireAuth, async (req, res) => {
   try {
@@ -9758,6 +9738,13 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
           is_active: true,
           edited_from_message_id: editedFromMessageId,
           updated_at: new Date().toISOString(),
+          full_prompt: {
+            company_id: context_company_id,
+            motion_context_selection,
+            motion_context_selected: motionCompanyStrategyContext.selected,
+            requested_ad_format,
+            requested_duration_seconds: requested_motion_duration,
+          },
         },
       ]);
 
