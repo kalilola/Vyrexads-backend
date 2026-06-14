@@ -8397,7 +8397,7 @@ app.post("/api/google-ads/sync-all", requireAuth, async (req, res) => {
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 if (!ANTHROPIC_API_KEY) console.warn("[env] Missing ANTHROPIC_API_KEY");
 
-const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-4-8";
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || "claude-fable-5";
 const ANTHROPIC_COMPANY_MODEL =
   process.env.ANTHROPIC_COMPANY_MODEL || ANTHROPIC_MODEL;
 
