@@ -4,6 +4,7 @@ import express from "express";
 import helmet from "helmet";
 import cors from "cors";
 import morgan from "morgan";
+import multer from "multer";
 import rateLimit from "express-rate-limit";
 import crypto from "crypto";
 import { chromium } from "playwright";
@@ -102,8 +103,13 @@ app.use(
   cors({
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
+
+      const isChromeExtension = origin.startsWith("chrome-extension://");
+
+      if (isChromeExtension) return cb(null, true);
       if (ALLOWED_ORIGINS.length === 0) return cb(null, true);
       if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+
       return cb(new Error("CORS blocked: origin not allowed"), false);
     },
     credentials: true,
@@ -129,6 +135,119 @@ function requireAuth(
     return res.status(401).json({ error: "Unauthorized" });
   }
   next();
+}
+
+const extensionCaptureUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 120 * 1024 * 1024,
+    files: 2,
+  },
+});
+
+function getBearerToken(req: express.Request) {
+  const header = String(req.header("authorization") || "").trim();
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || "";
+}
+
+async function resolveExtensionCaptureOwner(req: express.Request) {
+  if (!supabaseAdmin) {
+    throw new Error("Missing Supabase admin client");
+  }
+
+  const bearerToken = getBearerToken(req);
+  const apiHeaderToken = req.header("x-api-token") || req.header("x-api-auth") || "";
+
+  if (bearerToken && bearerToken !== API_AUTH_TOKEN) {
+    const { data, error } = await supabaseAdmin.auth.getUser(bearerToken);
+
+    if (error || !data?.user?.id) {
+      const details = error?.message || "Invalid Supabase user session";
+      const authError = new Error(details);
+      (authError as any).statusCode = 401;
+      throw authError;
+    }
+
+    return {
+      owner_id: data.user.id,
+      auth_method: "supabase_jwt",
+    };
+  }
+
+  if (
+    API_AUTH_TOKEN &&
+    (apiHeaderToken === API_AUTH_TOKEN || bearerToken === API_AUTH_TOKEN)
+  ) {
+    const owner_id = String(
+      (req.body as any)?.owner_id ||
+        (req.body as any)?.ownerId ||
+        req.header("x-owner-id") ||
+        ""
+    ).trim();
+
+    if (!owner_id) {
+      const authError = new Error("Missing owner_id for server-token extension upload");
+      (authError as any).statusCode = 400;
+      throw authError;
+    }
+
+    return {
+      owner_id,
+      auth_method: "server_token",
+    };
+  }
+
+  const authError = new Error("Unauthorized extension upload");
+  (authError as any).statusCode = 401;
+  throw authError;
+}
+
+function parseJsonBodyField(value: any) {
+  if (!value) return {};
+  if (typeof value === "object") return value;
+
+  try {
+    return JSON.parse(String(value));
+  } catch {
+    return {};
+  }
+}
+
+function sanitizeStorageSegment(value: string) {
+  return String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 120);
+}
+
+async function uploadAppFile(params: {
+  path: string;
+  body: Buffer;
+  mimeType: string;
+}) {
+  if (!supabaseAdmin) {
+    throw new Error("Missing Supabase admin client");
+  }
+
+  const { error } = await supabaseAdmin.storage
+    .from("app-files")
+    .upload(params.path, params.body, {
+      contentType: params.mimeType,
+      upsert: false,
+    });
+
+  if (error) {
+    throw new Error(`Supabase storage upload failed: ${error.message}`);
+  }
+
+  const { data } = supabaseAdmin.storage
+    .from("app-files")
+    .getPublicUrl(params.path);
+
+  return data.publicUrl;
 }
 
 // =========================================================
@@ -3143,6 +3262,242 @@ app.post("/api/screenshot", requireAuth, async (req, res) => {
     }
   }
 });
+
+
+// =========================================================
+// ROUTES - EXTENSION CHROME CAPTURE FULL PAGE
+// =========================================================
+
+app.post(
+  "/api/extension/captures",
+  extensionCaptureUpload.fields([
+    { name: "png", maxCount: 1 },
+    { name: "snapshot", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      assertSupabaseEnv();
+
+      const authContext = await resolveExtensionCaptureOwner(req);
+      const owner_id = authContext.owner_id;
+
+      const files = (req as any).files || {};
+      const pngFile = Array.isArray(files.png) ? files.png[0] : null;
+      const snapshotFile = Array.isArray(files.snapshot) ? files.snapshot[0] : null;
+
+      if (!pngFile?.buffer?.length) {
+        return res.status(400).json({
+          ok: false,
+          error: "Missing png file",
+        });
+      }
+
+      if (pngFile.mimetype !== "image/png") {
+        return res.status(400).json({
+          ok: false,
+          error: "Invalid png mime type. Expected image/png.",
+        });
+      }
+
+      const company_id = String(
+        (req.body as any)?.company_id ||
+          (req.body as any)?.companyId ||
+          ""
+      ).trim();
+
+      const project_id = String(
+        (req.body as any)?.project_id ||
+          (req.body as any)?.projectId ||
+          ""
+      ).trim();
+
+      const requestedSessionId = String(
+        (req.body as any)?.session_id ||
+          (req.body as any)?.sessionId ||
+          ""
+      ).trim();
+
+      const rawMetadata = parseJsonBodyField((req.body as any)?.metadata);
+      const metadata = {
+        ...rawMetadata,
+        project_id: project_id || null,
+        auth_method: authContext.auth_method,
+        received_at: new Date().toISOString(),
+      };
+
+      if (company_id) {
+        const companyCheckQuery = new URLSearchParams();
+        companyCheckQuery.set("select", "id");
+        companyCheckQuery.set("id", `eq.${company_id}`);
+        companyCheckQuery.set("owner_id", `eq.${owner_id}`);
+        companyCheckQuery.set("limit", "1");
+
+        const companies = await supabaseSelect("companies", companyCheckQuery);
+
+        if (!companies.length) {
+          return res.status(404).json({
+            ok: false,
+            error: "Company not found for this authenticated owner",
+          });
+        }
+      }
+
+      let session_id = requestedSessionId;
+
+      if (session_id) {
+        const sessionCheckQuery = new URLSearchParams();
+        sessionCheckQuery.set("select", "id");
+        sessionCheckQuery.set("id", `eq.${session_id}`);
+        sessionCheckQuery.set("owner_id", `eq.${owner_id}`);
+        sessionCheckQuery.set("limit", "1");
+
+        const sessions = await supabaseSelect("extension_capture_sessions", sessionCheckQuery);
+
+        if (!sessions.length) {
+          return res.status(404).json({
+            ok: false,
+            error: "Capture session not found for this authenticated owner",
+          });
+        }
+      } else {
+        const [createdSession] = await supabaseInsertReturning("extension_capture_sessions", [
+          {
+            owner_id,
+            company_id: company_id || null,
+            label:
+              metadata?.page_title ||
+              metadata?.page_url ||
+              "Capture extension Chrome",
+            source: "chrome_extension",
+          },
+        ]);
+
+        session_id = createdSession?.id || "";
+      }
+
+      const captureId = crypto.randomUUID();
+      const safeHost = sanitizeStorageSegment(
+        metadata?.page_url ? new URL(metadata.page_url).hostname : "page"
+      );
+      const basePath = [
+        owner_id,
+        "extension-captures",
+        session_id || "no-session",
+        captureId,
+      ].join("/");
+
+      const pngPath = `${basePath}/${Date.now()}-${safeHost}-full-page.png`;
+      const pngPublicUrl = await uploadAppFile({
+        path: pngPath,
+        body: pngFile.buffer,
+        mimeType: "image/png",
+      });
+
+      const [pngUploadedFile] = await supabaseInsertReturning("uploaded_files", [
+        {
+          owner_id,
+          context: "company_visual",
+          entity_id: company_id || null,
+          bucket: "app-files",
+          path: pngPath,
+          mime_type: "image/png",
+          size_bytes: pngFile.size || pngFile.buffer.length,
+          public_url: pngPublicUrl,
+        },
+      ]);
+
+      let snapshotPath: string | null = null;
+      let snapshotPublicUrl: string | null = null;
+      let snapshotUploadedFile: any = null;
+
+      if (snapshotFile?.buffer?.length) {
+        const snapshotMimeType = snapshotFile.mimetype || "text/html";
+        const allowedSnapshotMimeTypes = new Set([
+          "text/html",
+          "application/xhtml+xml",
+          "text/plain",
+        ]);
+
+        if (!allowedSnapshotMimeTypes.has(snapshotMimeType)) {
+          return res.status(400).json({
+            ok: false,
+            error: `Invalid snapshot mime type: ${snapshotMimeType}`,
+          });
+        }
+
+        snapshotPath = `${basePath}/${Date.now()}-${safeHost}-dom-snapshot.html`;
+        snapshotPublicUrl = await uploadAppFile({
+          path: snapshotPath,
+          body: snapshotFile.buffer,
+          mimeType: "text/html",
+        });
+
+        const [insertedSnapshot] = await supabaseInsertReturning("uploaded_files", [
+          {
+            owner_id,
+            context: "content_reference",
+            entity_id: company_id || null,
+            bucket: "app-files",
+            path: snapshotPath,
+            mime_type: "text/html",
+            size_bytes: snapshotFile.size || snapshotFile.buffer.length,
+            public_url: snapshotPublicUrl,
+          },
+        ]);
+
+        snapshotUploadedFile = insertedSnapshot || null;
+      }
+
+      const [captureRow] = await supabaseInsertReturning("extension_captures", [
+        {
+          id: captureId,
+          owner_id,
+          company_id: company_id || null,
+          session_id: session_id || null,
+          uploaded_file_id: pngUploadedFile?.id || null,
+          snapshot_file_id: snapshotUploadedFile?.id || null,
+          source_url: metadata?.page_url || null,
+          page_title: metadata?.page_title || null,
+          document_width: toNumber(metadata?.document_width, null),
+          document_height: toNumber(metadata?.document_height, null),
+          viewport_width: toNumber(metadata?.viewport_width, null),
+          viewport_height: toNumber(metadata?.viewport_height, null),
+          device_pixel_ratio: toNumber(metadata?.device_pixel_ratio, null),
+          capture_scale: toNumber(metadata?.capture_scale, null),
+          png_path: pngPath,
+          png_public_url: pngPublicUrl,
+          snapshot_path: snapshotPath,
+          snapshot_public_url: snapshotPublicUrl,
+          metadata,
+        },
+      ]);
+
+      return res.json({
+        ok: true,
+        capture_id: captureId,
+        session_id,
+        owner_id,
+        company_id: company_id || null,
+        png_url: pngPublicUrl,
+        snapshot_url: snapshotPublicUrl,
+        uploaded_file: pngUploadedFile,
+        snapshot_file: snapshotUploadedFile,
+        capture: captureRow,
+      });
+    } catch (e: any) {
+      console.error("[extension-captures] error:", e);
+
+      const statusCode = Number(e?.statusCode || 500);
+
+      return res.status(statusCode).json({
+        ok: false,
+        error: statusCode === 500 ? "Extension capture upload failed" : e?.message,
+        details: statusCode === 500 ? e?.message || String(e) : undefined,
+      });
+    }
+  }
+);
+
 
 // =========================================================
 // ROUTES - META OAUTH
