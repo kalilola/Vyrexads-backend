@@ -8,6 +8,8 @@ import multer from "multer";
 import rateLimit from "express-rate-limit";
 import crypto from "crypto";
 import { chromium } from "playwright";
+import fs from "fs";
+import path from "path";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -9691,23 +9693,9 @@ app.post("/api/motion-ad/upload", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
-  const owner_id = String(req.body?.owner_id || "");
-  const session_id = String(req.body?.session_id || "");
-  const request_company_id = req.body?.company_id ? String(req.body.company_id).trim() : null;
-  const motion_context_selection = normalizeMotionContextSelection(req.body?.motion_context_selection || {});
-  const user_text = String(req.body?.user_text || "");
-  const attachment_ids = Array.isArray(req.body?.attachment_ids) ? req.body.attachment_ids : [];
-  const question_answers = Array.isArray(req.body?.question_answers)
-    ? (req.body.question_answers as MotionQuestionAnswer[])
-    : [];
-  const requested_ad_format = String(req.body?.ad_format || "").trim();
-  const requested_duration_seconds = Number(req.body?.duration_seconds || 0);
-  const requested_motion_duration = normalizeMotionDurationSeconds(requested_duration_seconds);
-  const edit_position = parseOptionalPosition(req.body?.edit_position);
-  const system = String(
-    req.body?.system ||
-`Tu es Vyrex·Motion, un expert mondial en motion design publicitaire pour SaaS.
+
+const MOTION_AD_BASE_SYSTEM_PROMPT = 
+ `Tu es Vyrex·Motion, un expert mondial en motion design publicitaire pour SaaS.
       Tu crées des animations HTML/CSS/JS de haute qualité, dignes des meilleures agences créatives mondiales.
       Tu réponds TOUJOURS en français.
 
@@ -9792,7 +9780,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
 
       TOUR 1 — ANALYSE & QUESTIONS OBLIGATOIRES
 
-      Dès que tu reçois les premiers fichiers, assets, screenshots, logos ou une description du produit,
+      Dès que tu reçois les premiers fichiers, assets, DOM, screenshots, logos ou une description du produit,
       tu ne génères PAS encore d'animation.
 
       ============================================================
@@ -9806,7 +9794,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
 
       Règles strictes :
       * Ne pose une question QUE si tu as une incertitude réelle sur une information qui n'a pas déjà été fournie.
-      * Ne demande JAMAIS une information déjà présente — ou déductible — dans le prompt, les réponses,
+      * Ne demande JAMAIS une information déjà présente dans le prompt, les réponses,
         les screenshots, le DOM ou tout autre contexte fourni.
         Exemples : si les couleurs sont visibles dans le DOM ou les screenshots, ne demande pas la palette ;
         si le format est déductible des assets, ne demande pas le format ;
@@ -9821,28 +9809,29 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       1. Résumer ce que tu as compris du produit et des assets reçus. Maximum 2 à 3 phrases.
 
       2. Poser ces questions dans cet ordre :
-
-      📐 Format & Placement
+ 
+			Exemple : 
+      Format & Placement
       * Quel format cible ? 16:9, 9:16, 1:1, 4:5, bannière 728×90, ou autre ?
       * Quelle durée ? 5s, 10s, 15s, 20s+ ?
       * Où sera utilisée l'animation ? Landing page, Meta, TikTok, LinkedIn, YouTube, autre ?
 
-      🎨 Style & Ton
+      Style & Ton
       * Quel univers visuel ? Épuré/minimaliste, dynamique/tech, luxe/premium, fun/coloré, futuriste, corporate ?
       * Palette de couleurs précise ou couleurs à éviter ?
       * Typographie imposée ou préférence ? (Google Fonts disponibles)
 
-      📝 Message & Contenu
+      Message & Contenu
       * Message principal de la publicité ?
       * CTA à afficher ?
       * Slogan ou phrase d'accroche ?
       * Chiffres clés, témoignages, bénéfices ou fonctionnalités à afficher ?
 
-      🎬 Médias & Intégration
+      Médias & Intégration
       * Si vidéo détectée : décrivez son contenu et le moment d'intégration souhaité.
       * Autres médias à intégrer : icônes, screenshots, mockups, logos ?
 
-      ⚙️ Technique
+      Technique
       * Durée exacte et nombre de scènes ?
       * Fond transparent, fond plein, ou adaptable ?
 
@@ -9854,7 +9843,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       [
         {
           "id": "format_cible",
-          "category": "📐 Format & Placement",
+          "category": "Format & Placement",
           "label": "Quel format cible ?",
           "type": "single",
           "options": ["16:9", "9:16", "1:1", "4:5", "bannière 728×90", "autre"],
@@ -9863,7 +9852,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
         },
         {
           "id": "duree",
-          "category": "📐 Format & Placement",
+          "category": "Format & Placement",
           "label": "Quelle durée exacte souhaitez-vous ?",
           "type": "single",
           "options": ["5s", "10s", "15s", "20s", "30s"],
@@ -9872,7 +9861,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
         },
         {
           "id": "style_visuel",
-          "category": "🎨 Style & Ton",
+          "category": "Style & Ton",
           "label": "Quel univers visuel préférez-vous ?",
           "type": "single",
           "options": ["épuré/minimaliste", "dynamique/tech", "luxe/premium", "fun/coloré", "futuriste", "corporate"],
@@ -9881,7 +9870,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
         },
         {
           "id": "message_principal",
-          "category": "📝 Message & Contenu",
+          "category": "Message & Contenu",
           "label": "Quel est le message principal de cette publicité ?",
           "type": "text",
           "options": [],
@@ -9890,7 +9879,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
         },
         {
           "id": "cta",
-          "category": "📝 Message & Contenu",
+          "category": "Message & Contenu",
           "label": "Quel CTA faut-il afficher ?",
           "type": "text",
           "options": [],
@@ -9899,7 +9888,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
         },
         {
           "id": "contraintes",
-          "category": "⚙️ Technique",
+          "category": "Technique",
           "label": "Y a-t-il des contraintes techniques ou éléments à éviter ?",
           "type": "text",
           "options": [],
@@ -9912,35 +9901,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       Chaque question doit avoir exactement les clés : id, category, label, type, options, placeholder, required.
       type doit être "single", "multi" ou "text".
       Ne mets jamais de markdown dans [QUESTIONS].
-      Termine par : ✅ Dès que vous m'aurez répondu, je génèrerai votre animation.
-
-      ============================================================
-      PROCESSUS DE CRÉATION DE L'AD (ORDRE DE RÉFLEXION)
-      =================================================
-
-      Avant de produire l'animation, tu suis TOUJOURS cet ordre de raisonnement :
-
-      1. MESSAGE MARKETING
-         Réfléchis d'abord au message marketing central que l'ad doit transmettre :
-         la valeur du produit, la promesse, l'accroche. Tout le reste découle de ce message.
-
-      2. SÉLECTION DES ASSETS
-         Consulte ensuite les sources disponibles (STRUCTURE DOM + SCREENSHOTS PNG + assets fournis)
-         et sélectionne UNIQUEMENT les éléments utiles pour illustrer ce message :
-         sections d'UI, composants, cards, écrans, logo, visuels produit.
-         Ne prends pas tout — choisis ce qui sert le message.
-
-      3. RÉUTILISATION À L'IDENTIQUE
-         Quand un élément réel de l'interface doit apparaître dans l'ad, tu ne le recrées pas de mémoire
-         et tu ne l'approximes pas : tu vas chercher la section correspondante dans le DOM et tu copies-colles
-         le HTML/CSS EXACT de cette section dans le code de la motion ad, pour une fidélité parfaite.
-         Les screenshots servent de repère visuel — ils te montrent à quoi ressemble l'élément ;
-         le DOM te donne le code exact à réutiliser. Identifie l'élément sur le screenshot,
-         retrouve-le dans le DOM, et extrais sa section telle quelle pour la réintégrer dans l'ad.
-
-      4. LIVRAISON COMPLÈTE
-         Une fois le message défini, les assets sélectionnés et les sections réelles intégrées,
-         produis l'ad complète au format des 4 blocs (voir TOUR 2+ ci-dessous).
+      Termine par : Dès que vous m'aurez répondu, je génèrerai votre animation.
 
       ============================================================
       TOUR 2+ — GÉNÉRATION DE L'ANIMATION
@@ -10012,35 +9973,8 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       3. Foreground (textes, CTAs, badges) — arrive en dernier, durée 0.4–0.6s
 
       Ne jamais animer les 3 couches simultanément.
-
-      Timing & rythme :
-      * Easing standard : power3.out pour les entrées, power2.in pour les sorties
-      * Stagger systématique sur les listes et grilles : stagger: 0.08 à 0.12
-      * Minimum 12 moments visuels distincts pour une animation de 10 secondes
-      * Chaque scène doit avoir un "beat" principal — un moment où l'œil est attiré au centre
-      * Transitions entre scènes : 0.5s maximum, crossfade ou slide selon le style
-
-      Composition visuelle :
-      * Rule of thirds — jamais tout centré sur le même axe
-      * Hiérarchie typographique claire : titre (bold, large) → sous-titre → body → CTA
-      * Le CTA a toujours une micro-animation finale : pulse, glow, shine ou scale
-      * Le fond est toujours travaillé : gradient, particules, formes géométriques, halos
-      * Les assets produit sont traités comme des éléments premium : ombre, reflet, glow subtil
-
-      Effets à utiliser avec GSAP :
-      * gsap.from(el, { opacity: 0, y: 30, duration: 0.6, ease: "power3.out" }) pour les entrées texte
-      * gsap.from(el, { opacity: 0, scale: 0.9, duration: 0.5, ease: "back.out(1.4)" }) pour les cards
-      * gsap.from(el, { clipPath: "inset(0 100% 0 0)", duration: 0.8 }) pour les reveals horizontaux
-      * gsap.from(els, { opacity: 0, y: 20, stagger: 0.1 }) pour les listes
-      * { textContent: 0, snap: { textContent: 1 }, duration: 1.5, ease: "power2.out" } pour les counters
-
-      À éviter absolument :
-      * Animations sous 200ms sauf micro-interactions
-      * Plus de 3 éléments animés simultanément hors stagger
-      * Texte qui apparaît sans animation
-      * Scènes sans transition
-      * Couleurs incohérentes avec la marque
-      * Code incomplet ou éléments avec opacity:0 sans animation prévue
+			
+      
 
       ============================================================
       RÈGLES TECHNIQUES DU CODE
@@ -10087,8 +10021,65 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
       ==============
 
       Le résultat doit être indiscernable d'une production d'agence premium.
-      Chaque animation doit pouvoir être montrée à un CMO sans modification.`
-  );
+      Chaque animation doit pouvoir être montrée à un CMO sans modification.`;
+
+// Ajoute ici des exemples HTML fixes si tu veux les inclure dans le préfixe cacheable.
+// Laisser vide évite de mettre un bloc vide avec cache_control.
+const EXAMPLES_DIR = path.join(process.cwd(), "exemples");
+
+const MOTION_AD_ANIMATION_EXAMPLES = `
+<animation_exemple id="Exemple1">
+${fs.readFileSync(path.join(EXAMPLES_DIR, "Vyrexads_Ad_single_file.html"), "utf8")}
+</animation_exemple>
+
+<animation_exemple id="Exemple2">
+${fs.readFileSync(path.join(EXAMPLES_DIR, "Vyrexads_Motion_Ad_single_file.html"), "utf8")}
+</animation_exemple>
+
+Inspire-toi de la structure, du rythme, du niveau de polish, des transitions et de la qualité visuelle de ces exemples.
+`;
+
+
+
+
+type ClaudeSystemTextBlock = {
+  type: "text";
+  text: string;
+  cache_control?: { type: "ephemeral" };
+};
+
+function buildMotionAdClaudeSystemBlocks(systemVariable: string): ClaudeSystemTextBlock[] {
+  const examples = MOTION_AD_ANIMATION_EXAMPLES.trim();
+
+  if (examples) {
+    return [
+      { type: "text", text: MOTION_AD_BASE_SYSTEM_PROMPT },
+      { type: "text", text: examples, cache_control: { type: "ephemeral" } },
+      { type: "text", text: systemVariable },
+    ];
+  }
+
+  return [
+    { type: "text", text: MOTION_AD_BASE_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+    { type: "text", text: systemVariable },
+  ];
+}
+
+app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
+  const owner_id = String(req.body?.owner_id || "");
+  const session_id = String(req.body?.session_id || "");
+  const request_company_id = req.body?.company_id ? String(req.body.company_id).trim() : null;
+  const motion_context_selection = normalizeMotionContextSelection(req.body?.motion_context_selection || {});
+  const user_text = String(req.body?.user_text || "");
+  const attachment_ids = Array.isArray(req.body?.attachment_ids) ? req.body.attachment_ids : [];
+  const question_answers = Array.isArray(req.body?.question_answers)
+    ? (req.body.question_answers as MotionQuestionAnswer[])
+    : [];
+  const requested_ad_format = String(req.body?.ad_format || "").trim();
+  const requested_duration_seconds = Number(req.body?.duration_seconds || 0);
+  const requested_motion_duration = normalizeMotionDurationSeconds(requested_duration_seconds);
+  const edit_position = parseOptionalPosition(req.body?.edit_position);
+  const system = MOTION_AD_BASE_SYSTEM_PROMPT;
   const messages = (req.body?.messages || []) as MotionAdChatMessage[];
 
   if (!owner_id || !session_id || (!messages.length && !user_text.trim())) {
@@ -10116,9 +10107,10 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
 
     const context_company_id =
       motionCompanyStrategyContext.company_id || requestedContextCompanyId;
-    const systemForClaude = `${system}${buildMotionAdSystemContextAppendix(motionCompanyStrategyContext)}
+    const systemVariable = `${buildMotionAdSystemContextAppendix(motionCompanyStrategyContext)}
 
 CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format || "non précisé"}, durée demandée = ${requested_motion_duration || requested_duration_seconds || "non précisée"} secondes. Le bloc [META], const DURATION et window.__VYREXADS_DURATION__ doivent utiliser cette durée exacte si elle est précisée.`;
+    const systemForClaude = buildMotionAdClaudeSystemBlocks(systemVariable);
 
     if (["9:16", "1:1", "16:9", "4:5"].includes(requested_ad_format) || context_company_id) {
       await supabaseUpsert(
@@ -10237,6 +10229,7 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
 
     let stopReason: string | null = null;
     let outputTokens: number | null = null;
+    let anthropicUsage: Record<string, unknown> | null = null;
     
 
     const reader = anthropicRes.body.getReader();
@@ -10319,9 +10312,16 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
 
         handleAnthropicEvent(evt);
 
+        if (evt.type === "message_start") {
+          anthropicUsage = evt.message?.usage || anthropicUsage;
+        }
+
         if (evt.type === "message_delta") {
           stopReason = evt.delta?.stop_reason || stopReason;
           outputTokens = evt.usage?.output_tokens ?? outputTokens;
+          if (evt.usage) {
+            anthropicUsage = { ...(anthropicUsage || {}), ...evt.usage };
+          }
         }
 
         if (evt.type === "message_stop") {
@@ -10376,6 +10376,7 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
                 full_prompt: {
                   system: systemForClaude,
                   base_system: system,
+                  system_variable: systemVariable,
                   company_id: context_company_id,
                   motion_context_selection,
                   motion_company_strategy_context: motionCompanyStrategyContext,
@@ -10398,6 +10399,9 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
                   debug: {
                     stop_reason: stopReason,
                     output_tokens: outputTokens,
+                    anthropic_usage: anthropicUsage,
+                    cache_creation_input_tokens: Number(anthropicUsage?.cache_creation_input_tokens || 0),
+                    cache_read_input_tokens: Number(anthropicUsage?.cache_read_input_tokens || 0),
                     full_text_length: fullText.length,
                     full_thinking_length: fullThinking.length,
                     full_code_length: fullCode.length,
@@ -10427,6 +10431,8 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
             user_message_id: userMessageId,
             edit_position,
             duration_seconds: motionDurationSeconds,
+            cache_creation_input_tokens: Number(anthropicUsage?.cache_creation_input_tokens || 0),
+            cache_read_input_tokens: Number(anthropicUsage?.cache_read_input_tokens || 0),
           });
 
           return res.end();

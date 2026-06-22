@@ -1,0 +1,1906 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vyrexads — Motion Ad</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; background: #0a0a0a; overflow: hidden; }
+    #root { position: absolute; inset: 0; }
+    :root { font-synthesis: none; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <!-- Inlined from animations.jsx -->
+  <script type="text/babel" data-presets="env,react">
+// @ds-adherence-ignore -- omelette starter scaffold (raw elements/hex/px by design)
+
+/* BEGIN USAGE */
+// animations.jsx
+// Reusable animation starter: Stage, Timeline, Sprite, easing helpers.
+// Exports (to window): Stage, Sprite, PlaybackBar, TextSprite, ImageSprite, RectSprite,
+//   useTime, useTimeline, useSprite, Easing, interpolate, animate, clamp.
+//
+// Usage (in an HTML file that loads React + Babel):
+//
+//   <Stage width={1280} height={720} duration={10} background="#f6f4ef">
+//     <MyScene />
+//   </Stage>
+//
+// <Stage> auto-scales to the viewport and provides the scrubber, play/pause,
+// ←/→ seek, space, and 0-to-reset controls, and persists the playhead.
+// Inside <Stage>, any child can call useTime() to read the current
+// playhead (seconds). Or wrap content in <Sprite start={1} end={4}>...</Sprite>
+// to only render during that window -- children receive a `localTime` and
+// `progress` via the useSprite() hook. Use Easing + interpolate()/animate()
+// for tweens; TextSprite / ImageSprite / RectSprite have built-in entry/exit.
+// Build YOUR scenes by composing Sprites inside a Stage.
+/* END USAGE */
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Easing functions (hand-rolled, Popmotion-style) ─────────────────────────
+// All easings take t ∈ [0,1] and return eased t ∈ [0,1] (may overshoot for back/elastic).
+const Easing = {
+  linear: (t) => t,
+
+  // Quad
+  easeInQuad:    (t) => t * t,
+  easeOutQuad:   (t) => t * (2 - t),
+  easeInOutQuad: (t) => (t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t),
+
+  // Cubic
+  easeInCubic:    (t) => t * t * t,
+  easeOutCubic:   (t) => (--t) * t * t + 1,
+  easeInOutCubic: (t) => (t < 0.5 ? 4 * t * t * t : (t - 1) * (2 * t - 2) * (2 * t - 2) + 1),
+
+  // Quart
+  easeInQuart:    (t) => t * t * t * t,
+  easeOutQuart:   (t) => 1 - (--t) * t * t * t,
+  easeInOutQuart: (t) => (t < 0.5 ? 8 * t * t * t * t : 1 - 8 * (--t) * t * t * t),
+
+  // Expo
+  easeInExpo:  (t) => (t === 0 ? 0 : Math.pow(2, 10 * (t - 1))),
+  easeOutExpo: (t) => (t === 1 ? 1 : 1 - Math.pow(2, -10 * t)),
+  easeInOutExpo: (t) => {
+    if (t === 0) return 0;
+    if (t === 1) return 1;
+    if (t < 0.5) return 0.5 * Math.pow(2, 20 * t - 10);
+    return 1 - 0.5 * Math.pow(2, -20 * t + 10);
+  },
+
+  // Sine
+  easeInSine:    (t) => 1 - Math.cos((t * Math.PI) / 2),
+  easeOutSine:   (t) => Math.sin((t * Math.PI) / 2),
+  easeInOutSine: (t) => -(Math.cos(Math.PI * t) - 1) / 2,
+
+  // Back (overshoot)
+  easeOutBack: (t) => {
+    const c1 = 1.70158, c3 = c1 + 1;
+    return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+  },
+  easeInBack: (t) => {
+    const c1 = 1.70158, c3 = c1 + 1;
+    return c3 * t * t * t - c1 * t * t;
+  },
+  easeInOutBack: (t) => {
+    const c1 = 1.70158, c2 = c1 * 1.525;
+    return t < 0.5
+      ? (Math.pow(2 * t, 2) * ((c2 + 1) * 2 * t - c2)) / 2
+      : (Math.pow(2 * t - 2, 2) * ((c2 + 1) * (t * 2 - 2) + c2) + 2) / 2;
+  },
+
+  // Elastic
+  easeOutElastic: (t) => {
+    const c4 = (2 * Math.PI) / 3;
+    if (t === 0) return 0;
+    if (t === 1) return 1;
+    return Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * c4) + 1;
+  },
+};
+
+// ── Core interpolation helpers ──────────────────────────────────────────────
+
+// Clamp a value to [min, max]
+const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+
+// interpolate([0, 0.5, 1], [0, 100, 50], ease?) -> fn(t)
+// Popmotion-style: linearly maps t across input keyframes to output values,
+// with optional easing per segment (single fn or array of fns).
+function interpolate(input, output, ease = Easing.linear) {
+  return (t) => {
+    if (t <= input[0]) return output[0];
+    if (t >= input[input.length - 1]) return output[output.length - 1];
+    for (let i = 0; i < input.length - 1; i++) {
+      if (t >= input[i] && t <= input[i + 1]) {
+        const span = input[i + 1] - input[i];
+        const local = span === 0 ? 0 : (t - input[i]) / span;
+        const easeFn = Array.isArray(ease) ? (ease[i] || Easing.linear) : ease;
+        const eased = easeFn(local);
+        return output[i] + (output[i + 1] - output[i]) * eased;
+      }
+    }
+    return output[output.length - 1];
+  };
+}
+
+// animate({from, to, start, end, ease})(t) — simpler single-segment tween.
+// Returns `from` before `start`, `to` after `end`.
+function animate({ from = 0, to = 1, start = 0, end = 1, ease = Easing.easeInOutCubic }) {
+  return (t) => {
+    if (t <= start) return from;
+    if (t >= end) return to;
+    const local = (t - start) / (end - start);
+    return from + (to - from) * ease(local);
+  };
+}
+
+// ── Timeline context ────────────────────────────────────────────────────────
+
+const TimelineContext = React.createContext({ time: 0, duration: 10, playing: false });
+
+const useTime = () => React.useContext(TimelineContext).time;
+const useTimeline = () => React.useContext(TimelineContext);
+
+// ── Sprite ──────────────────────────────────────────────────────────────────
+// Renders children only when the playhead is inside [start, end]. Provides
+// a sub-context with `localTime` (seconds since start) and `progress` (0..1).
+//
+//   <Sprite start={2} end={5}>
+//     {({ localTime, progress }) => <Thing x={progress * 100} />}
+//   </Sprite>
+//
+// Or as a plain wrapper — children can call useSprite() themselves.
+
+const SpriteContext = React.createContext({ localTime: 0, progress: 0, duration: 0 });
+const useSprite = () => React.useContext(SpriteContext);
+
+function Sprite({ start = 0, end = Infinity, children, keepMounted = false }) {
+  const { time } = useTimeline();
+  const visible = time >= start && time <= end;
+  if (!visible && !keepMounted) return null;
+
+  const duration = end - start;
+  const localTime = Math.max(0, time - start);
+  const progress = duration > 0 && isFinite(duration)
+    ? clamp(localTime / duration, 0, 1)
+    : 0;
+
+  const value = { localTime, progress, duration, visible };
+
+  return (
+    <SpriteContext.Provider value={value}>
+      {typeof children === 'function' ? children(value) : children}
+    </SpriteContext.Provider>
+  );
+}
+
+// ── Sample sprite components ────────────────────────────────────────────────
+
+// TextSprite: fades/slides text in on entry, holds, then fades out on exit.
+// Props: text, x, y, size, color, font, entryDur, exitDur, align
+function TextSprite({
+  text,
+  x = 0, y = 0,
+  size = 48,
+  color = '#111',
+  font = 'Inter, system-ui, sans-serif',
+  weight = 600,
+  entryDur = 0.45,
+  exitDur = 0.35,
+  entryEase = Easing.easeOutBack,
+  exitEase = Easing.easeInCubic,
+  align = 'left',
+  letterSpacing = '-0.01em',
+}) {
+  const { localTime, duration } = useSprite();
+  const exitStart = Math.max(0, duration - exitDur);
+
+  let opacity = 1;
+  let ty = 0;
+
+  if (localTime < entryDur) {
+    const t = entryEase(clamp(localTime / entryDur, 0, 1));
+    opacity = t;
+    ty = (1 - t) * 16;
+  } else if (localTime > exitStart) {
+    const t = exitEase(clamp((localTime - exitStart) / exitDur, 0, 1));
+    opacity = 1 - t;
+    ty = -t * 8;
+  }
+
+  const translateX = align === 'center' ? '-50%' : align === 'right' ? '-100%' : '0';
+
+  return (
+    <div style={{
+      position: 'absolute',
+      left: x, top: y,
+      transform: `translate(${translateX}, ${ty}px)`,
+      opacity,
+      fontFamily: font,
+      fontSize: size,
+      fontWeight: weight,
+      color,
+      letterSpacing,
+      whiteSpace: 'pre',
+      lineHeight: 1.1,
+      willChange: 'transform, opacity',
+    }}>
+      {text}
+    </div>
+  );
+}
+
+// ImageSprite: scales + fades in; optional Ken Burns drift during hold.
+function ImageSprite({
+  src,
+  x = 0, y = 0,
+  width = 400, height = 300,
+  entryDur = 0.6,
+  exitDur = 0.4,
+  kenBurns = false,
+  kenBurnsScale = 1.08,
+  radius = 12,
+  fit = 'cover',
+  placeholder = null, // {label: string} for striped placeholder
+}) {
+  const { localTime, duration } = useSprite();
+  const exitStart = Math.max(0, duration - exitDur);
+
+  let opacity = 1;
+  let scale = 1;
+
+  if (localTime < entryDur) {
+    const t = Easing.easeOutCubic(clamp(localTime / entryDur, 0, 1));
+    opacity = t;
+    scale = 0.96 + 0.04 * t;
+  } else if (localTime > exitStart) {
+    const t = Easing.easeInCubic(clamp((localTime - exitStart) / exitDur, 0, 1));
+    opacity = 1 - t;
+    scale = (kenBurns ? kenBurnsScale : 1) + 0.02 * t;
+  } else if (kenBurns) {
+    const holdSpan = exitStart - entryDur;
+    const holdT = holdSpan > 0 ? (localTime - entryDur) / holdSpan : 0;
+    scale = 1 + (kenBurnsScale - 1) * holdT;
+  }
+
+  const content = placeholder ? (
+    <div style={{
+      width: '100%', height: '100%',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'repeating-linear-gradient(135deg, #e9e6df 0 10px, #dcd8cf 10px 20px)',
+      color: '#6b6458',
+      fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+      fontSize: 13,
+      letterSpacing: '0.04em',
+      textTransform: 'uppercase',
+    }}>
+      {placeholder.label || 'image'}
+    </div>
+  ) : (
+    <img src={src} alt="" style={{ width: '100%', height: '100%', objectFit: fit, display: 'block' }} />
+  );
+
+  return (
+    <div style={{
+      position: 'absolute',
+      left: x, top: y,
+      width, height,
+      opacity,
+      transform: `scale(${scale})`,
+      transformOrigin: 'center',
+      borderRadius: radius,
+      overflow: 'hidden',
+      willChange: 'transform, opacity',
+    }}>
+      {content}
+    </div>
+  );
+}
+
+// RectSprite: simple rectangle that animates position/size/color via props.
+// Useful demo primitive — takes a `render` fn for per-frame customization.
+function RectSprite({
+  x = 0, y = 0,
+  width = 100, height = 100,
+  color = '#111',
+  radius = 8,
+  entryDur = 0.4,
+  exitDur = 0.3,
+  render, // optional: (ctx) => style overrides
+}) {
+  const spriteCtx = useSprite();
+  const { localTime, duration } = spriteCtx;
+  const exitStart = Math.max(0, duration - exitDur);
+
+  let opacity = 1;
+  let scale = 1;
+
+  if (localTime < entryDur) {
+    const t = Easing.easeOutBack(clamp(localTime / entryDur, 0, 1));
+    opacity = clamp(localTime / entryDur, 0, 1);
+    scale = 0.4 + 0.6 * t;
+  } else if (localTime > exitStart) {
+    const t = Easing.easeInQuad(clamp((localTime - exitStart) / exitDur, 0, 1));
+    opacity = 1 - t;
+    scale = 1 - 0.15 * t;
+  }
+
+  const overrides = render ? render(spriteCtx) : {};
+
+  return (
+    <div style={{
+      position: 'absolute',
+      left: x, top: y,
+      width, height,
+      background: color,
+      borderRadius: radius,
+      opacity,
+      transform: `scale(${scale})`,
+      transformOrigin: 'center',
+      willChange: 'transform, opacity',
+      ...overrides,
+    }} />
+  );
+}
+
+
+function Stage({
+  width = 1280,
+  height = 720,
+  duration = 10,
+  background = '#f6f4ef',
+  fps = 60,
+  loop = true,
+  autoplay = true,
+  persistKey = 'animstage',
+  children,
+}) {
+  const [time, setTime] = React.useState(() => {
+    try {
+      const v = parseFloat(localStorage.getItem(persistKey + ':t') || '0');
+      return isFinite(v) ? clamp(v, 0, duration) : 0;
+    } catch { return 0; }
+  });
+  const [playing, setPlaying] = React.useState(autoplay);
+  const [hoverTime, setHoverTime] = React.useState(null);
+  const [scale, setScale] = React.useState(1);
+
+  const stageRef = React.useRef(null);
+  const canvasRef = React.useRef(null);
+  const rafRef = React.useRef(null);
+  const lastTsRef = React.useRef(null);
+
+  // Persist playhead
+  React.useEffect(() => {
+    try { localStorage.setItem(persistKey + ':t', String(time)); } catch {}
+  }, [time, persistKey]);
+
+  // Auto-scale to fit viewport
+  React.useEffect(() => {
+    if (!stageRef.current) return;
+    const el = stageRef.current;
+    const measure = () => {
+      const barH = 44; // playback bar height
+      const s = Math.min(
+        el.clientWidth / width,
+        (el.clientHeight - barH) / height
+      );
+      setScale(Math.max(0.05, s));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    window.addEventListener('resize', measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [width, height]);
+
+  // Animation loop
+  React.useEffect(() => {
+    if (!playing) {
+      lastTsRef.current = null;
+      return;
+    }
+    const step = (ts) => {
+      if (lastTsRef.current == null) lastTsRef.current = ts;
+      const dt = (ts - lastTsRef.current) / 1000;
+      lastTsRef.current = ts;
+      setTime((t) => {
+        let next = t + dt;
+        if (next >= duration) {
+          if (loop) next = next % duration;
+          else { next = duration; setPlaying(false); }
+        }
+        return next;
+      });
+      rafRef.current = requestAnimationFrame(step);
+    };
+    rafRef.current = requestAnimationFrame(step);
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      lastTsRef.current = null;
+    };
+  }, [playing, duration, loop]);
+
+  // Keyboard: space = play/pause, ← → = seek
+  React.useEffect(() => {
+    const onKey = (e) => {
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setPlaying(p => !p);
+      } else if (e.code === 'ArrowLeft') {
+        setTime(t => clamp(t - (e.shiftKey ? 1 : 0.1), 0, duration));
+      } else if (e.code === 'ArrowRight') {
+        setTime(t => clamp(t + (e.shiftKey ? 1 : 0.1), 0, duration));
+      } else if (e.key === '0' || e.code === 'Home') {
+        setTime(0);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [duration]);
+
+  const displayTime = hoverTime != null ? hoverTime : time;
+
+  const ctxValue = React.useMemo(
+    () => ({ time: displayTime, duration, playing, setTime, setPlaying }),
+    [displayTime, duration, playing]
+  );
+
+  return (
+    <div
+      ref={stageRef}
+      style={{
+        position: 'absolute', inset: 0,
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center',
+        background: '#0a0a0a',
+        fontFamily: 'Inter, system-ui, sans-serif',
+      }}
+    >
+      {/* Canvas area — vertically centered in remaining space */}
+      <div style={{
+        flex: 1,
+        width: '100%',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        overflow: 'hidden',
+        minHeight: 0,
+      }}>
+        <div
+          ref={canvasRef}
+          style={{
+            width, height,
+            background,
+            position: 'relative',
+            transform: `scale(${scale})`,
+            transformOrigin: 'center',
+            flexShrink: 0,
+            boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
+            overflow: 'hidden',
+          }}
+        >
+          <TimelineContext.Provider value={ctxValue}>
+            {children}
+          </TimelineContext.Provider>
+        </div>
+      </div>
+
+      {/* Playback bar — stacked below canvas, never overlapping */}
+      <PlaybackBar
+        time={displayTime}
+        actualTime={time}
+        duration={duration}
+        playing={playing}
+        onPlayPause={() => setPlaying(p => !p)}
+        onReset={() => { setTime(0); }}
+        onSeek={(t) => setTime(t)}
+        onHover={(t) => setHoverTime(t)}
+      />
+    </div>
+  );
+}
+
+// ── Playback bar ────────────────────────────────────────────────────────────
+// Play/pause, return-to-begin, scrub track, time display.
+// Uses fixed-width time fields so layout doesn't thrash.
+
+function PlaybackBar({ time, duration, playing, onPlayPause, onReset, onSeek, onHover }) {
+  const trackRef = React.useRef(null);
+  const [dragging, setDragging] = React.useState(false);
+
+  const timeFromEvent = React.useCallback((e) => {
+    const rect = trackRef.current.getBoundingClientRect();
+    const x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+    return x * duration;
+  }, [duration]);
+
+  const onTrackMove = (e) => {
+    if (!trackRef.current) return;
+    const t = timeFromEvent(e);
+    if (dragging) {
+      onSeek(t);
+    } else {
+      onHover(t);
+    }
+  };
+
+  const onTrackLeave = () => {
+    if (!dragging) onHover(null);
+  };
+
+  const onTrackDown = (e) => {
+    setDragging(true);
+    const t = timeFromEvent(e);
+    onSeek(t);
+    onHover(null);
+  };
+
+  React.useEffect(() => {
+    if (!dragging) return;
+    const onUp = () => setDragging(false);
+    const onMove = (e) => {
+      if (!trackRef.current) return;
+      const t = timeFromEvent(e);
+      onSeek(t);
+    };
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('mousemove', onMove);
+    return () => {
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('mousemove', onMove);
+    };
+  }, [dragging, timeFromEvent, onSeek]);
+
+  const pct = duration > 0 ? (time / duration) * 100 : 0;
+  const fmt = (t) => {
+    const total = Math.max(0, t);
+    const m = Math.floor(total / 60);
+    const s = Math.floor(total % 60);
+    const cs = Math.floor((total * 100) % 100);
+    return `${String(m).padStart(1, '0')}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
+  };
+
+  const mono = 'JetBrains Mono, ui-monospace, SFMono-Regular, monospace';
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 12,
+      padding: '8px 16px',
+      background: 'rgba(20,20,20,0.92)',
+      borderTop: '1px solid rgba(255,255,255,0.08)',
+      width: '100%',
+      maxWidth: 680,
+      alignSelf: 'center',
+
+      borderRadius: 8,
+      color: '#f6f4ef',
+      fontFamily: 'Inter, system-ui, sans-serif',
+      userSelect: 'none',
+      flexShrink: 0,
+    }}>
+      <IconButton onClick={onReset} title="Return to start (0)">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <path d="M3 2v10M12 2L5 7l7 5V2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round"/>
+        </svg>
+      </IconButton>
+      <IconButton onClick={onPlayPause} title="Play/pause (space)">
+        {playing ? (
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <rect x="3" y="2" width="3" height="10" fill="currentColor"/>
+            <rect x="8" y="2" width="3" height="10" fill="currentColor"/>
+          </svg>
+        ) : (
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M3 2l9 5-9 5V2z" fill="currentColor"/>
+          </svg>
+        )}
+      </IconButton>
+
+      {/* Current time: fixed width so it doesn't thrash */}
+      <div style={{
+        fontFamily: mono,
+        fontSize: 12,
+        fontVariantNumeric: 'tabular-nums',
+        width: 64, textAlign: 'right',
+        color: '#f6f4ef',
+      }}>
+        {fmt(time)}
+      </div>
+
+      {/* Scrub track */}
+      <div
+        ref={trackRef}
+        onMouseMove={onTrackMove}
+        onMouseLeave={onTrackLeave}
+        onMouseDown={onTrackDown}
+        style={{
+          flex: 1,
+          height: 22,
+          position: 'relative',
+          cursor: 'pointer',
+          display: 'flex', alignItems: 'center',
+        }}
+      >
+        <div style={{
+          position: 'absolute',
+          left: 0, right: 0, height: 4,
+          background: 'rgba(255,255,255,0.12)',
+          borderRadius: 2,
+        }}/>
+        <div style={{
+          position: 'absolute',
+          left: 0, width: `${pct}%`, height: 4,
+          background: 'oklch(72% 0.12 250)',
+          borderRadius: 2,
+        }}/>
+        <div style={{
+          position: 'absolute',
+          left: `${pct}%`, top: '50%',
+          width: 12, height: 12,
+          marginLeft: -6, marginTop: -6,
+          background: '#fff',
+          borderRadius: 6,
+          boxShadow: '0 2px 4px rgba(0,0,0,0.4)',
+        }}/>
+      </div>
+
+      {/* Duration: fixed width */}
+      <div style={{
+        fontFamily: mono,
+        fontSize: 12,
+        fontVariantNumeric: 'tabular-nums',
+        width: 64, textAlign: 'left',
+        color: 'rgba(246,244,239,0.55)',
+      }}>
+        {fmt(duration)}
+      </div>
+    </div>
+  );
+}
+
+function IconButton({ children, onClick, title }) {
+  const [hover, setHover] = React.useState(false);
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        width: 28, height: 28,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: hover ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.04)',
+        border: '1px solid rgba(255,255,255,0.1)',
+        borderRadius: 6,
+        color: '#f6f4ef',
+        cursor: 'pointer',
+        padding: 0,
+        transition: 'background 120ms',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+
+Object.assign(window, {
+  Easing, interpolate, animate, clamp,
+  TimelineContext, useTime, useTimeline,
+  Sprite, SpriteContext, useSprite,
+  TextSprite, ImageSprite, RectSprite,
+  Stage, PlaybackBar,
+});
+
+//# sourceURL=animations.jsx
+  </script>
+
+  <!-- Inlined from ui.jsx -->
+  <script type="text/babel" data-presets="env,react">
+// ui.jsx — Vyrexads brand + UI mock primitives for the motion ad
+// Exports to window at the bottom. Loaded as text/babel after React + animations.jsx.
+
+const V = {
+  bg: '#0A0B0D', bg2: '#101216',
+  panel: '#FFFFFF', panelSoft: '#FBFBFC',
+  border: '#E9EBEF', borderSoft: '#F0F1F4',
+  ink: '#0E1116', ink2: '#111827',
+  muted: '#6B7280', faint: '#9CA3AF', faint2: '#C7CBD1',
+  blue: '#2B91D1', blueDeep: '#1E6FB8',
+  green: '#14B88A', greenInk: '#0E9E76', greenBg: '#D7FBF1',
+  red: '#EF4444', amber: '#F59E0B', violet: '#7C6CF0',
+  white: '#FFFFFF',
+};
+const FONT = 'Inter, system-ui, -apple-system, sans-serif';
+const MONO = '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace';
+
+// soft, layered shadow for floating light panels on the dark stage
+const PANEL_SHADOW = '0 2px 4px rgba(0,0,0,0.18), 0 24px 60px -16px rgba(0,0,0,0.55), 0 1px 0 rgba(255,255,255,0.6) inset';
+
+// ── Brand mark (rounded black square + lightning bolt) ──────────────────────
+function BrandMark({ size = 44, radius = null, glow = false }) {
+  const r = radius == null ? Math.round(size * 0.22) : radius;
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: r, background: '#111111',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      boxShadow: glow ? `0 0 28px ${V.blue}66, 0 6px 18px rgba(0,0,0,0.45)` : '0 6px 18px rgba(0,0,0,0.35)',
+      flexShrink: 0,
+    }}>
+      <svg width={size * 0.62} height={size * 0.62} viewBox="0 0 23 23" fill="none">
+        <path d="M13.5 4.8L7.5 12h4l-1 6.2 6-7.5h-4z" fill="#fff" />
+      </svg>
+    </div>
+  );
+}
+
+function Wordmark({ size = 26, color = '#fff', sub = null }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontFamily: FONT }}>
+      <span style={{ fontSize: size, fontWeight: 800, letterSpacing: '-0.03em', color }}>Vyrexads</span>
+      {sub && <span style={{ fontSize: size * 0.42, fontWeight: 600, color: V.faint, letterSpacing: '0.02em' }}>{sub}</span>}
+    </div>
+  );
+}
+
+function Lockup({ size = 44, color = '#fff', gap = 14 }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap }}>
+      <BrandMark size={size} glow />
+      <Wordmark size={size * 0.62} color={color} />
+    </div>
+  );
+}
+
+// ── Dark stage background: drifting grid + moving accent glow + vignette ─────
+function GlowBg({ accent = V.blue, accent2 = V.green, intensity = 1 }) {
+  const t = useTime();
+  const gx = 50 + Math.sin(t * 0.35) * 16;
+  const gy = 38 + Math.cos(t * 0.27) * 12;
+  const gx2 = 72 + Math.cos(t * 0.22) * 14;
+  const gy2 = 66 + Math.sin(t * 0.3) * 12;
+  const drift = (t * 14) % 64;
+  return (
+    <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', background: V.bg }}>
+      {/* base vertical wash */}
+      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, #0C0E12 0%, #08090B 60%, #050608 100%)' }} />
+      {/* grid */}
+      <div style={{
+        position: 'absolute', inset: -64,
+        backgroundImage: `linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px)`,
+        backgroundSize: '64px 64px',
+        transform: `translate(${-drift}px, ${-drift * 0.5}px)`,
+        maskImage: 'radial-gradient(120% 90% at 50% 40%, #000 35%, transparent 78%)',
+        WebkitMaskImage: 'radial-gradient(120% 90% at 50% 40%, #000 35%, transparent 78%)',
+      }} />
+      {/* moving accent glows */}
+      <div style={{
+        position: 'absolute', inset: 0,
+        background: `radial-gradient(46% 46% at ${gx}% ${gy}%, ${accent}${intensity >= 1 ? '3a' : '24'} 0%, transparent 60%)`,
+      }} />
+      <div style={{
+        position: 'absolute', inset: 0,
+        background: `radial-gradient(40% 40% at ${gx2}% ${gy2}%, ${accent2}26 0%, transparent 62%)`,
+      }} />
+      {/* vignette */}
+      <div style={{ position: 'absolute', inset: 0, boxShadow: 'inset 0 0 240px 60px rgba(0,0,0,0.6)' }} />
+    </div>
+  );
+}
+
+// ── Generic floating panel ──────────────────────────────────────────────────
+function Panel({ x, y, w, h, children, radius = 16, pad = 0, style = {}, bg = V.panel }) {
+  return (
+    <div style={{
+      position: 'absolute', left: x, top: y, width: w, height: h,
+      background: bg, borderRadius: radius, border: `1px solid ${V.border}`,
+      boxShadow: PANEL_SHADOW, padding: pad, boxSizing: 'border-box',
+      fontFamily: FONT, overflow: 'hidden', ...style,
+    }}>
+      {children}
+    </div>
+  );
+}
+
+// platform meta
+const PLATFORMS = {
+  Instagram: { c: '#E1306C' }, TikTok: { c: '#111111' }, YouTube: { c: '#EF4444' },
+  LinkedIn: { c: '#2B91D1' }, Facebook: { c: '#2B91D1' }, Email: { c: '#14B88A' }, Meta: { c: '#2B91D1' },
+};
+
+function PlatformDot({ name, size = 8 }) {
+  const c = (PLATFORMS[name] || { c: V.faint }).c;
+  return <span style={{ width: size, height: size, borderRadius: size, background: c, display: 'inline-block', flexShrink: 0 }} />;
+}
+
+// ── Content / post card (used in problem chaos, AI output, calendar) ─────────
+function ContentCard({ w = 210, title = 'UGC : lash primer', type = 'Video', platform = 'Instagram',
+  tint = null, status = null, thumb = true, shadow = true, scale = 1, rotate = 0, style = {} }) {
+  const accent = tint || (PLATFORMS[platform] || { c: V.blue }).c;
+  return (
+    <div style={{
+      width: w, background: V.panel, borderRadius: 12, border: `1px solid ${V.border}`,
+      boxShadow: shadow ? '0 10px 30px -8px rgba(0,0,0,0.4)' : 'none', overflow: 'hidden',
+      transform: `scale(${scale}) rotate(${rotate}deg)`, fontFamily: FONT, ...style,
+    }}>
+      {thumb && (
+        <div style={{ height: w * 0.62, position: 'relative',
+          background: `linear-gradient(135deg, ${accent}22, ${accent}0d)`,
+          borderBottom: `1px solid ${V.borderSoft}` }}>
+          <div style={{ position: 'absolute', inset: 0,
+            backgroundImage: 'repeating-linear-gradient(135deg, rgba(0,0,0,0.025) 0 8px, transparent 8px 16px)' }} />
+          <div style={{ position: 'absolute', left: 10, top: 10, width: 18, height: 18, borderRadius: 5,
+            background: accent, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <svg width="10" height="10" viewBox="0 0 23 23"><path d="M13.5 4.8L7.5 12h4l-1 6.2 6-7.5h-4z" fill="#fff" /></svg>
+          </div>
+        </div>
+      )}
+      <div style={{ padding: '9px 11px 11px' }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: V.ink2, letterSpacing: '-0.01em',
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+          <PlatformDot name={platform} />
+          <span style={{ fontSize: 10.5, color: V.muted, fontWeight: 500 }}>{platform}</span>
+          <span style={{ fontSize: 10.5, color: V.faint }}>·</span>
+          <span style={{ fontSize: 10.5, color: V.muted }}>{type}</span>
+          {status && (
+            <span style={{ marginLeft: 'auto', fontSize: 9.5, fontWeight: 700, color: V.greenInk,
+              background: V.greenBg, border: '1px solid #B7EADF', borderRadius: 20, padding: '2px 7px' }}>{status}</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Pills / chips ───────────────────────────────────────────────────────────
+function Pill({ children, dark = false, accent = null, style = {} }) {
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 7, padding: '7px 13px', borderRadius: 999,
+      fontSize: 13, fontWeight: 600, fontFamily: FONT,
+      color: dark ? '#fff' : (accent || V.ink2),
+      background: dark ? '#111' : V.panel,
+      border: dark ? '1px solid #111' : `1px solid ${V.border}`,
+      boxShadow: '0 6px 16px -8px rgba(0,0,0,0.35)', whiteSpace: 'nowrap', ...style,
+    }}>{children}</span>
+  );
+}
+
+// ── Kicker (small uppercase label, on dark) ─────────────────────────────────
+function Kicker({ children, color = V.blue, x, y, align = 'left' }) {
+  return (
+    <div style={{
+      position: 'absolute', left: x, top: y, fontFamily: MONO, fontSize: 15, fontWeight: 600,
+      letterSpacing: '0.34em', textTransform: 'uppercase', color,
+      transform: align === 'center' ? 'translateX(-50%)' : 'none', display: 'flex', alignItems: 'center', gap: 12,
+    }}>
+      <span style={{ width: 26, height: 2, background: color, display: 'inline-block', opacity: 0.8 }} />
+      {children}
+    </div>
+  );
+}
+
+// ── Sparkle / AI glyph ──────────────────────────────────────────────────────
+function Sparkle({ size = 22, color = V.violet, style = {} }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" style={style}>
+      <path d="M12 1.5l1.9 5.4 5.4 1.9-5.4 1.9L12 16.1l-1.9-5.4L4.7 8.8l5.4-1.9z" fill={color} />
+      <path d="M19 2l.9 2.4L22.3 5.3l-2.4.9L19 8.6l-.9-2.4-2.4-.9 2.4-.9z" fill={color} opacity="0.7" />
+    </svg>
+  );
+}
+
+// fake cursor
+function Cursor({ x, y, label = null }) {
+  return (
+    <div style={{ position: 'absolute', left: x, top: y, transform: 'translate(-2px,-2px)', zIndex: 50, pointerEvents: 'none' }}>
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" style={{ filter: 'drop-shadow(0 3px 6px rgba(0,0,0,0.45))' }}>
+        <path d="M5 3l14 7-6 1.6L9.6 18z" fill="#fff" stroke="#111" strokeWidth="1.4" strokeLinejoin="round" />
+      </svg>
+      {label && (
+        <div style={{ position: 'absolute', left: 22, top: 16, background: '#111', color: '#fff', fontFamily: FONT,
+          fontSize: 11, fontWeight: 600, padding: '3px 8px', borderRadius: 6, whiteSpace: 'nowrap' }}>{label}</div>
+      )}
+    </div>
+  );
+}
+
+// ── shared motion helpers ───────────────────────────────────────────────────
+// standard scene cut-in / cut-out (fast fade + micro scale). Returns style props.
+function shellAnim(localTime, duration, { inDur = 0.4, outDur = 0.32, fromScale = 1.05, rise = 22 } = {}) {
+  const outStart = Math.max(0, duration - outDur);
+  let opacity = 1, scale = 1, ty = 0;
+  if (localTime < inDur) {
+    const t = Easing.easeOutCubic(clamp(localTime / inDur, 0, 1));
+    opacity = t; scale = fromScale - (fromScale - 1) * t; ty = (1 - t) * rise;
+  } else if (localTime > outStart) {
+    const t = Easing.easeInCubic(clamp((localTime - outStart) / outDur, 0, 1));
+    opacity = 1 - t; scale = 1 - 0.04 * t; ty = -t * 14;
+  }
+  return { opacity, transform: `scale(${scale}) translateY(${ty}px)` };
+}
+
+// hex color lerp
+function lerpHex(a, b, t) {
+  const pa = [parseInt(a.slice(1, 3), 16), parseInt(a.slice(3, 5), 16), parseInt(a.slice(5, 7), 16)];
+  const pb = [parseInt(b.slice(1, 3), 16), parseInt(b.slice(3, 5), 16), parseInt(b.slice(5, 7), 16)];
+  const c = pa.map((v, i) => Math.round(v + (pb[i] - v) * clamp(t, 0, 1)));
+  return '#' + c.map(v => v.toString(16).padStart(2, '0')).join('');
+}
+
+// piecewise color picker across [ {t, a, b} ] anchors
+function colorPhase(time, stops) {
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (time >= stops[i].t && time <= stops[i + 1].t) {
+      const f = (time - stops[i].t) / (stops[i + 1].t - stops[i].t || 1);
+      const e = Easing.easeInOutCubic(f);
+      return { a: lerpHex(stops[i].a, stops[i + 1].a, e), b: lerpHex(stops[i].b, stops[i + 1].b, e) };
+    }
+  }
+  const last = stops[stops.length - 1];
+  return { a: last.a, b: last.b };
+}
+
+// typed-text: returns substring of `text` based on progress + a blinking caret flag
+function typed(text, localTime, { start = 0, cps = 26 } = {}) {
+  const n = clamp(Math.floor((localTime - start) * cps), 0, text.length);
+  const done = n >= text.length;
+  const caret = !done || (Math.floor(localTime * 2) % 2 === 0);
+  return { str: text.slice(0, n), done, caret };
+}
+
+Object.assign(window, {
+  V, FONT, MONO, PANEL_SHADOW, PLATFORMS,
+  BrandMark, Wordmark, Lockup, GlowBg, Panel, PlatformDot, ContentCard, Pill, Kicker, Sparkle, Cursor,
+  shellAnim, lerpHex, colorPhase, typed,
+});
+
+//# sourceURL=ui.jsx
+  </script>
+
+  <!-- Inlined from charts.jsx -->
+  <script type="text/babel" data-presets="env,react">
+// charts.jsx — animated data viz for the Vyrexads ad. Loaded after ui.jsx.
+
+// format a number with thousands separators + optional decimals
+function fmtNum(n, decimals = 0) {
+  const fixed = Number(n).toFixed(decimals);
+  const [int, dec] = fixed.split('.');
+  const withSep = int.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return dec != null ? `${withSep}.${dec}` : withSep;
+}
+
+// ── Count-up number ─────────────────────────────────────────────────────────
+function CountUp({ to, progress, decimals = 0, prefix = '', suffix = '',
+  size = 40, weight = 800, color = V.ink2, style = {} }) {
+  const e = Easing.easeOutCubic(clamp(progress, 0, 1));
+  const val = to * e;
+  return (
+    <span style={{ fontFamily: FONT, fontWeight: weight, fontSize: size, color,
+      letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums', ...style }}>
+      {prefix}{fmtNum(val, decimals)}{suffix}
+    </span>
+  );
+}
+
+// helper: build smooth-ish path + sample head position
+function buildPath(pts, w, h, pad = 0) {
+  const xs = pts.map((p, i) => pad + (i / (pts.length - 1)) * (w - pad * 2));
+  const min = Math.min(...pts), max = Math.max(...pts);
+  const ys = pts.map(v => h - pad - ((v - min) / (max - min || 1)) * (h - pad * 2));
+  let d = `M ${xs[0]} ${ys[0]}`;
+  for (let i = 1; i < pts.length; i++) {
+    const cx = (xs[i - 1] + xs[i]) / 2;
+    d += ` C ${cx} ${ys[i - 1]} ${cx} ${ys[i]} ${xs[i]} ${ys[i]}`;
+  }
+  return { d, xs, ys };
+}
+
+// ── Self-drawing line chart with area fill + head dot ───────────────────────
+function LineChart({ progress, w = 520, h = 220, pts, color = V.green, pad = 14,
+  showDot = true, showArea = true, strokeW = 3 }) {
+  const data = pts || [22, 30, 26, 38, 34, 50, 46, 62, 58, 78, 88];
+  const { d, xs, ys } = buildPath(data, w, h, pad);
+  const p = clamp(progress, 0, 1);
+  // head dot position by sampling segment lengths
+  const segLen = [];
+  let total = 0;
+  for (let i = 1; i < xs.length; i++) {
+    const l = Math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]); segLen.push(l); total += l;
+  }
+  let target = total * p, acc = 0, hx = xs[0], hy = ys[0];
+  for (let i = 0; i < segLen.length; i++) {
+    if (acc + segLen[i] >= target) {
+      const f = (target - acc) / (segLen[i] || 1);
+      hx = xs[i] + (xs[i + 1] - xs[i]) * f; hy = ys[i] + (ys[i + 1] - ys[i]) * f; break;
+    }
+    acc += segLen[i]; hx = xs[i + 1]; hy = ys[i + 1];
+  }
+  const areaD = `${d} L ${xs[xs.length - 1]} ${h - pad} L ${xs[0]} ${h - pad} Z`;
+  const gid = 'lcg' + Math.round(w + h + data[0]);
+  return (
+    <svg width={w} height={h} style={{ display: 'block', overflow: 'visible' }}>
+      <defs>
+        <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor={color} stopOpacity="0.22" />
+          <stop offset="1" stopColor={color} stopOpacity="0" />
+        </linearGradient>
+        <clipPath id={gid + 'clip'}><rect x="0" y="0" width={pad + p * (w - pad * 2)} height={h} /></clipPath>
+      </defs>
+      {/* baseline */}
+      <line x1={pad} y1={h - pad} x2={w - pad} y2={h - pad} stroke={V.borderSoft} strokeWidth="1" />
+      {showArea && <path d={areaD} fill={`url(#${gid})`} clipPath={`url(#${gid}clip)`} />}
+      <path d={d} fill="none" stroke={color} strokeWidth={strokeW} strokeLinecap="round"
+        pathLength="1" strokeDasharray="1" strokeDashoffset={1 - p} />
+      {showDot && p > 0.02 && (
+        <>
+          <circle cx={hx} cy={hy} r="9" fill={color} opacity="0.18" />
+          <circle cx={hx} cy={hy} r="4.5" fill={color} stroke="#fff" strokeWidth="2" />
+        </>
+      )}
+    </svg>
+  );
+}
+
+// ── Growing bars ────────────────────────────────────────────────────────────
+function Bars({ progress, w = 260, h = 150, data, color = V.blue, gap = 10, pad = 8 }) {
+  const vals = data || [40, 62, 48, 78, 70, 96, 88];
+  const max = Math.max(...vals);
+  const bw = (w - pad * 2 - gap * (vals.length - 1)) / vals.length;
+  const p = clamp(progress, 0, 1);
+  return (
+    <svg width={w} height={h} style={{ display: 'block' }}>
+      {vals.map((v, i) => {
+        // stagger each bar's growth
+        const local = clamp((p - i * 0.05) / (1 - vals.length * 0.04), 0, 1);
+        const bh = (v / max) * (h - pad * 2) * Easing.easeOutCubic(local);
+        const x = pad + i * (bw + gap);
+        const last = i === vals.length - 1;
+        return (
+          <rect key={i} x={x} y={h - pad - bh} width={bw} height={bh} rx="4"
+            fill={last ? color : V.faint2} opacity={last ? 1 : 0.55} />
+        );
+      })}
+    </svg>
+  );
+}
+
+// ── KPI stat block ──────────────────────────────────────────────────────────
+function KPIStat({ label, to, progress, decimals = 0, prefix = '', suffix = '',
+  delta = null, color = V.ink2, w = 'auto' }) {
+  return (
+    <div style={{ fontFamily: FONT, width: w }}>
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: V.faint }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 6 }}>
+        <CountUp to={to} progress={progress} decimals={decimals} prefix={prefix} suffix={suffix} size={30} color={color} />
+        {delta != null && progress > 0.45 && (
+          <span style={{ fontSize: 13, fontWeight: 700, color: V.greenInk, display: 'inline-flex', alignItems: 'center', gap: 2,
+            opacity: clamp((progress - 0.45) / 0.3, 0, 1) }}>
+            <svg width="11" height="11" viewBox="0 0 12 12"><path d="M6 2l4 5H7v3H5V7H2z" fill={V.greenInk} /></svg>
+            {delta}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Ring / gauge (e.g. ROAS, engagement %) ──────────────────────────────────
+function Ring({ progress, to = 100, size = 130, stroke = 12, color = V.green, label = '', suffix = '%', decimals = 0 }) {
+  const e = Easing.easeOutCubic(clamp(progress, 0, 1));
+  const r = (size - stroke) / 2, c = 2 * Math.PI * r;
+  const frac = (to / 100) * e;
+  return (
+    <div style={{ position: 'relative', width: size, height: size, fontFamily: FONT }}>
+      <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={V.borderSoft} strokeWidth={stroke} />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={stroke} strokeLinecap="round"
+          strokeDasharray={c} strokeDashoffset={c * (1 - clamp(frac, 0, 1))} />
+      </svg>
+      <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+        <CountUp to={to} progress={progress} decimals={decimals} suffix={suffix} size={size * 0.24} color={V.ink2} />
+        {label && <div style={{ fontSize: 11, fontWeight: 600, color: V.muted, marginTop: 2 }}>{label}</div>}
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { fmtNum, CountUp, LineChart, Bars, KPIStat, Ring });
+
+//# sourceURL=charts.jsx
+  </script>
+
+  <!-- Inlined from scenes_a.jsx -->
+  <script type="text/babel" data-presets="env,react">
+// scenes_a.jsx — Scenes 1-3 (Problem, AI Create, Schedule). Loaded after charts.jsx.
+
+// big display headline on dark
+function Headline({ lines, x, y, size = 84, color = '#fff', lh = 1.02 }) {
+  return (
+    <div style={{ position: 'absolute', left: x, top: y, fontFamily: FONT, fontWeight: 800,
+      fontSize: size, lineHeight: lh, letterSpacing: '-0.035em', color, textWrap: 'balance' }}>
+      {lines.map((l, i) => <div key={i}>{l}</div>)}
+    </div>
+  );
+}
+function SubLine({ children, x, y, w = 560 }) {
+  return (
+    <div style={{ position: 'absolute', left: x, top: y, width: w, fontFamily: FONT, fontSize: 23,
+      fontWeight: 450, lineHeight: 1.45, color: 'rgba(255,255,255,0.62)', letterSpacing: '-0.01em' }}>{children}</div>
+  );
+}
+
+// ════════════════════════════ SCENE 1 — PROBLEM ════════════════════════════
+function SceneProblem() {
+  const { localTime, duration } = useSprite();
+  const t = useTime();
+  const shell = shellAnim(localTime, duration, { inDur: 0.45 });
+
+  // chaotic pile of draft cards
+  const cards = [
+    { title: 'Untitled draft', type: 'Video', plat: 'Instagram', x: 1140, y: 300, rot: -7, d: 0.15 },
+    { title: 'Reel idea #14', type: 'Image', plat: 'TikTok', x: 1330, y: 250, rot: 5, d: 0.32 },
+    { title: 'Promo — v3 (final?)', type: 'Carousel', plat: 'YouTube', x: 1235, y: 470, rot: -3, d: 0.5 },
+    { title: 'Newsletter copy', type: 'Email', plat: 'LinkedIn', x: 1430, y: 460, rot: 8, d: 0.68 },
+  ];
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, ...shell }}>
+      <Kicker x={135} y={332} color={V.red}>THE PROBLEM</Kicker>
+      <Headline lines={['Creating content', 'takes too long.']} x={133} y={372} size={88} />
+      <SubLine x={135} y={600} w={520}>Writing, designing, scheduling, analyzing — every post done by hand, every week.</SubLine>
+
+      {/* chaos cluster */}
+      <div style={{ position: 'absolute', inset: 0 }}>
+        {cards.map((c, i) => {
+          const lp = clamp((localTime - c.d) / 0.5, 0, 1);
+          const e = Easing.easeOutBack(lp);
+          const jx = Math.sin(t * 6 + i * 2) * 2.2 * lp;
+          const jy = Math.cos(t * 5 + i) * 2.2 * lp;
+          return (
+            <div key={i} style={{ position: 'absolute', left: c.x + jx, top: c.y + jy,
+              transform: `scale(${0.6 + 0.4 * e}) rotate(${c.rot}deg)`, opacity: lp,
+              transformOrigin: 'center' }}>
+              <ContentCard w={196} title={c.title} type={c.type} platform={c.plat} />
+            </div>
+          );
+        })}
+
+        {/* spinning clock badge */}
+        <div style={{ position: 'absolute', left: 1118, top: 232, opacity: clamp((localTime - 0.7) / 0.4, 0, 1),
+          transform: `scale(${0.5 + 0.5 * Easing.easeOutBack(clamp((localTime - 0.7) / 0.4, 0, 1))})` }}>
+          <div style={{ width: 74, height: 74, borderRadius: 999, background: '#fff', border: `1px solid ${V.border}`,
+            boxShadow: '0 12px 30px -8px rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <svg width="44" height="44" viewBox="0 0 44 44">
+              <circle cx="22" cy="22" r="18" fill="none" stroke={V.border} strokeWidth="2.5" />
+              <circle cx="22" cy="22" r="1.8" fill={V.red} />
+              <line x1="22" y1="22" x2="22" y2="11" stroke={V.ink2} strokeWidth="2.4" strokeLinecap="round"
+                transform={`rotate(${t * 240} 22 22)`} />
+              <line x1="22" y1="22" x2="32" y2="22" stroke={V.red} strokeWidth="2" strokeLinecap="round"
+                transform={`rotate(${t * 30} 22 22)`} />
+            </svg>
+          </div>
+        </div>
+
+        {/* wasted-hours counter */}
+        <div style={{ position: 'absolute', left: 1470, top: 300, opacity: clamp((localTime - 1.0) / 0.4, 0, 1),
+          transform: `translateY(${(1 - clamp((localTime - 1.0) / 0.4, 0, 1)) * 14}px)` }}>
+          <div style={{ background: '#fff', border: `1px solid ${V.border}`, borderRadius: 14, padding: '14px 18px',
+            boxShadow: '0 14px 34px -10px rgba(0,0,0,0.5)', fontFamily: FONT, width: 168 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', color: V.faint, textTransform: 'uppercase' }}>Time lost</div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, marginTop: 4 }}>
+              <CountUp to={14} progress={clamp((localTime - 1.0) / 1.4, 0, 1)} size={40} color={V.red} />
+              <span style={{ fontSize: 17, fontWeight: 700, color: V.red }}>h / week</span>
+            </div>
+          </div>
+        </div>
+
+        {/* stuck progress bar */}
+        <div style={{ position: 'absolute', left: 1150, top: 640, width: 280, opacity: clamp((localTime - 1.3) / 0.4, 0, 1) }}>
+          <div style={{ background: '#fff', border: `1px solid ${V.border}`, borderRadius: 12, padding: '12px 14px',
+            boxShadow: '0 12px 28px -10px rgba(0,0,0,0.45)', fontFamily: FONT }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 8 }}>
+              <span style={{ color: V.muted, fontWeight: 600 }}>Publishing manually…</span>
+              <span style={{ color: V.faint, fontVariantNumeric: 'tabular-nums' }}>18%</span>
+            </div>
+            <div style={{ height: 6, borderRadius: 6, background: V.borderSoft, overflow: 'hidden' }}>
+              <div style={{ height: '100%', width: `${18 + Math.sin(t * 3) * 1.5}%`, background: V.amber, borderRadius: 6 }} />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════ SCENE 2 — AI CREATE ══════════════════════════
+function SceneAICreate() {
+  const { localTime, duration } = useSprite();
+  const t = useTime();
+  const shell = shellAnim(localTime, duration, { inDur: 0.4 });
+
+  const promptText = 'Launch a UGC campaign — lash primer, 3 posts';
+  const tp = typed(promptText, localTime, { start: 0.35, cps: 34 });
+  const clickT = 2.0;
+  const clicked = localTime >= clickT;
+  const flash = clamp(1 - Math.abs(localTime - clickT) / 0.22, 0, 1);
+
+  // cursor travel to Generate button (button center ~ 1648,322)
+  const curP = clamp((localTime - 1.4) / 0.55, 0, 1);
+  const cx = 1300 + (1648 - 1300) * Easing.easeInOutCubic(curP);
+  const cy = 560 + (322 - 560) * Easing.easeInOutCubic(curP);
+  const press = clamp(1 - Math.abs(localTime - clickT) / 0.12, 0, 1);
+
+  const genCards = [
+    { title: 'Hook: "Lashes that last"', type: 'Reel', plat: 'Instagram', d: 0.0 },
+    { title: 'Before / after carousel', type: 'Carousel', plat: 'TikTok', d: 0.16 },
+    { title: '"3 reasons" explainer', type: 'Video', plat: 'YouTube', d: 0.32 },
+  ];
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, ...shell }}>
+      <Kicker x={135} y={300} color={V.violet}>AI CONTENT</Kicker>
+      <Headline lines={['Generate it all', 'with AI.']} x={133} y={340} size={80} />
+      <SubLine x={135} y={560} w={470}>Visuals, captions, hooks and whole campaigns — drafted in seconds, on brand.</SubLine>
+
+      {/* prompt card */}
+      <Panel x={980} y={262} w={800} h={120} radius={18} pad={0}>
+        <div style={{ display: 'flex', alignItems: 'center', height: '100%', padding: '0 18px', gap: 14 }}>
+          <Sparkle size={26} color={V.violet} />
+          <div style={{ flex: 1, fontFamily: FONT, fontSize: 20, fontWeight: 500, color: V.ink2, letterSpacing: '-0.01em' }}>
+            {tp.str}<span style={{ opacity: tp.caret ? 1 : 0, color: V.violet, fontWeight: 400 }}>|</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 20px', borderRadius: 12,
+            background: '#111', color: '#fff', fontFamily: FONT, fontSize: 16, fontWeight: 700,
+            transform: `scale(${1 - press * 0.06})`, boxShadow: clicked ? `0 0 0 4px ${V.violet}33` : 'none' }}>
+            <Sparkle size={17} color="#fff" /> Generate
+          </div>
+        </div>
+      </Panel>
+
+      {/* generated cards */}
+      <div style={{ position: 'absolute', left: 980, top: 430 }}>
+        {genCards.map((c, i) => {
+          const start = clickT + 0.18 + c.d;
+          const lp = clamp((localTime - start) / 0.5, 0, 1);
+          if (lp <= 0) return <div key={i} />;
+          const e = Easing.easeOutBack(lp);
+          const skel = clamp((localTime - start) / 0.28, 0, 1); // 0..1 skeleton→content
+          return (
+            <div key={i} style={{ position: 'absolute', left: i * 270, top: (1 - e) * 24,
+              transform: `scale(${0.8 + 0.2 * e})`, opacity: lp, transformOrigin: 'top center' }}>
+              <div style={{ position: 'relative' }}>
+                <ContentCard w={250} title={c.title} type={c.type} platform={c.plat} status={skel > 0.9 ? 'AI' : null} />
+                {skel < 1 && (
+                  <div style={{ position: 'absolute', inset: 0, borderRadius: 12, overflow: 'hidden', pointerEvents: 'none' }}>
+                    <div style={{ position: 'absolute', inset: 0, background: '#fff', opacity: 1 - skel }} />
+                    <div style={{ position: 'absolute', top: 0, bottom: 0,
+                      left: `${-30 + skel * 160}%`, width: '40%',
+                      background: 'linear-gradient(90deg, transparent, rgba(124,108,240,0.18), transparent)' }} />
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* toast */}
+      {localTime > clickT + 0.9 && (
+        <div style={{ position: 'absolute', left: 980, top: 742, opacity: clamp((localTime - clickT - 0.9) / 0.35, 0, 1),
+          display: 'inline-flex', alignItems: 'center', gap: 9, padding: '10px 16px', borderRadius: 999, whiteSpace: 'nowrap',
+          background: '#fff', border: `1px solid ${V.border}`, boxShadow: '0 10px 26px -10px rgba(0,0,0,0.4)',
+          fontFamily: FONT, fontSize: 15, fontWeight: 600, color: V.ink2 }}>
+          <Sparkle size={16} color={V.violet} /> 3 posts generated · ready to schedule
+        </div>
+      )}
+
+      {/* generate flash */}
+      {flash > 0 && (
+        <div style={{ position: 'absolute', left: 1648, top: 322, width: 0, height: 0 }}>
+          <div style={{ position: 'absolute', width: 480, height: 480, left: -240, top: -240, borderRadius: 999,
+            background: `radial-gradient(circle, ${V.violet}55, transparent 60%)`, opacity: flash,
+            transform: `scale(${0.4 + flash})` }} />
+        </div>
+      )}
+
+      <Cursor x={cx} y={cy} />
+    </div>
+  );
+}
+
+// ════════════════════════════ SCENE 3 — SCHEDULE ═══════════════════════════
+function CalendarPanel({ localTime }) {
+  // absolute canvas geometry
+  const PX = 720, PY = 196, PW = 1066, PH = 700;
+  const gridX = PX + 20, gridTop = PY + 116, colW = (PW - 40) / 7, rowH = (PH - 116 - 22) / 5;
+  const days = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+  const events = [
+    { col: 1, row: 0, time: '09:00', title: 'Hook reel', plat: 'Instagram', d: 0.2 },
+    { col: 3, row: 0, time: '12:30', title: 'Explainer', plat: 'YouTube', d: 0.38 },
+    { col: 0, row: 1, time: '08:30', title: 'Newsletter', plat: 'Email', d: 0.56 },
+    { col: 4, row: 1, time: '17:00', title: 'Carousel', plat: 'TikTok', d: 0.74 },
+    { col: 6, row: 2, time: '11:00', title: 'UGC post', plat: 'LinkedIn', d: 0.92 },
+    { col: 2, row: 2, time: '15:00', title: 'Promo clip', plat: 'Instagram', d: 1.1 },
+    { col: 5, row: 3, time: '19:00', title: 'Live recap', plat: 'YouTube', d: 1.28 },
+  ];
+  const dateNums = [];
+  let n = 1; for (let r = 0; r < 5; r++) { const row = []; for (let c = 0; c < 7; c++) { row.push(n <= 31 ? n : null); n++; } dateNums.push(row); }
+
+  return (
+    <React.Fragment>
+      <Panel x={PX} y={PY} w={PW} h={PH} radius={18} />
+      {/* toolbar */}
+      <div style={{ position: 'absolute', left: PX + 20, top: PY + 20, width: PW - 40, display: 'flex', alignItems: 'center', gap: 12 }}>
+        <BrandMark size={26} />
+        <span style={{ fontFamily: FONT, fontWeight: 800, fontSize: 18, color: V.ink2, letterSpacing: '-0.02em' }}>May 2026</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, marginLeft: 10, padding: '6px 12px', borderRadius: 999,
+          background: V.greenBg, border: '1px solid #B7EADF', color: V.greenInk, fontFamily: FONT, fontSize: 12.5, fontWeight: 700 }}>
+          <span style={{ width: 7, height: 7, borderRadius: 7, background: V.green }} /> Auto-schedule on
+        </span>
+        <div style={{ marginLeft: 'auto', display: 'flex', border: `1px solid ${V.border}`, borderRadius: 9, overflow: 'hidden' }}>
+          {['Day', 'Week', 'Month'].map((v, i) => (
+            <span key={v} style={{ padding: '7px 14px', fontFamily: FONT, fontSize: 12.5, fontWeight: i === 2 ? 700 : 500,
+              color: i === 2 ? '#fff' : V.muted, background: i === 2 ? '#111' : '#fff' }}>{v}</span>
+          ))}
+        </div>
+      </div>
+      {/* weekday header */}
+      {days.map((d, i) => (
+        <div key={d} style={{ position: 'absolute', left: gridX + i * colW + 8, top: gridTop - 26,
+          fontFamily: MONO, fontSize: 11, fontWeight: 600, letterSpacing: '0.1em', color: V.faint }}>{d}</div>
+      ))}
+      {/* grid */}
+      <svg style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }} width={1920} height={1080}>
+        {[0, 1, 2, 3, 4, 5].map(r => <line key={'h' + r} x1={gridX} y1={gridTop + r * rowH} x2={gridX + 7 * colW} y2={gridTop + r * rowH} stroke={V.borderSoft} strokeWidth="1" />)}
+        {[0, 1, 2, 3, 4, 5, 6, 7].map(c => <line key={'v' + c} x1={gridX + c * colW} y1={gridTop} x2={gridX + c * colW} y2={gridTop + 5 * rowH} stroke={V.borderSoft} strokeWidth="1" />)}
+      </svg>
+      {/* date numbers */}
+      {dateNums.map((row, r) => row.map((dn, c) => dn && (
+        <div key={r + '-' + c} style={{ position: 'absolute', left: gridX + c * colW + 9, top: gridTop + r * rowH + 7,
+          fontFamily: FONT, fontSize: 12, fontWeight: 600, color: V.faint }}>{dn}</div>
+      )))}
+      {/* events flying into cells */}
+      {events.map((ev, i) => {
+        const lp = clamp((localTime - ev.d) / 0.55, 0, 1);
+        if (lp <= 0) return <div key={i} />;
+        const e = Easing.easeOutBack(lp);
+        const tx = gridX + ev.col * colW + 6, ty = gridTop + ev.row * rowH + 26;
+        const sx = gridX + 6, sy = gridTop + 5 * rowH - 30;
+        const x = sx + (tx - sx) * e, y = sy + (ty - sy) * e;
+        const c = (PLATFORMS[ev.plat] || { c: V.blue }).c;
+        return (
+          <div key={i} style={{ position: 'absolute', left: x, top: y, width: colW - 12,
+            transform: `scale(${0.7 + 0.3 * e})`, opacity: clamp(lp * 1.4, 0, 1) }}>
+            <div style={{ background: '#fff', border: `1px solid ${V.border}`, borderLeft: `3px solid ${c}`,
+              borderRadius: 7, padding: '6px 8px', boxShadow: '0 6px 16px -6px rgba(0,0,0,0.3)', fontFamily: FONT }}>
+              <div style={{ fontSize: 9.5, color: V.muted, fontWeight: 600 }}>{ev.time}</div>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: V.ink2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{ev.title}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 3 }}>
+                <PlatformDot name={ev.plat} size={6} /><span style={{ fontSize: 9.5, color: V.muted }}>{ev.plat}</span>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </React.Fragment>
+  );
+}
+
+function SceneSchedule() {
+  const { localTime, duration } = useSprite();
+  const shell = shellAnim(localTime, duration, { inDur: 0.4 });
+  return (
+    <div style={{ position: 'absolute', inset: 0, ...shell }}>
+      <Kicker x={135} y={300} color={V.blue}>AUTOMATE</Kicker>
+      <Headline lines={['Schedule across', 'every platform.']} x={133} y={340} size={72} />
+      <SubLine x={135} y={540} w={470}>Vyrexads picks the best slots per channel and posts for you — automatically.</SubLine>
+
+      {/* platform legend */}
+      <div style={{ position: 'absolute', left: 135, top: 690, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {[['Instagram', 4], ['TikTok', 3], ['YouTube', 2], ['Email', 1]].map(([p, c], i) => {
+          const lp = clamp((localTime - 0.6 - i * 0.12) / 0.4, 0, 1);
+          return (
+            <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 11, opacity: lp,
+              transform: `translateX(${(1 - lp) * -14}px)` }}>
+              <PlatformDot name={p} size={9} />
+              <span style={{ fontFamily: FONT, fontSize: 15, fontWeight: 600, color: 'rgba(255,255,255,0.82)', width: 96 }}>{p}</span>
+              <span style={{ fontFamily: MONO, fontSize: 13, color: V.faint }}>{c} scheduled</span>
+            </div>
+          );
+        })}
+      </div>
+
+      <CalendarPanel localTime={localTime} />
+    </div>
+  );
+}
+
+Object.assign(window, { Headline, SubLine, SceneProblem, SceneAICreate, SceneSchedule, CalendarPanel });
+
+//# sourceURL=scenes_a.jsx
+  </script>
+
+  <!-- Inlined from scenes_b.jsx -->
+  <script type="text/babel" data-presets="env,react">
+// scenes_b.jsx — Scenes 4-6 (Analytics, Self-improving loop, End card). After scenes_a.jsx.
+
+// ════════════════════════════ SCENE 4 — ANALYTICS ══════════════════════════
+function AnalyticsPanel({ localTime }) {
+  const PX = 720, PY = 196, PW = 1066, PH = 700;
+  const ix = PX + 26; // inner left (absolute)
+  const chartProg = clamp((localTime - 0.55) / 2.1, 0, 1);
+  const kpiProg = clamp((localTime - 0.45) / 1.6, 0, 1);
+  const kpis = [
+    { label: 'Reach', to: 248000, delta: '+38%', fmtK: true },
+    { label: 'Engagement', to: 7.9, suffix: '%', decimals: 1, delta: '+22%' },
+    { label: 'ROAS', to: 4.6, suffix: 'x', decimals: 1, delta: '+0.9' },
+    { label: 'Conversions', to: 1284, decimals: 0, delta: '+41%' },
+  ];
+  const kpiW = (PW - 52) / 4;
+  return (
+    <React.Fragment>
+      <Panel x={PX} y={PY} w={PW} h={PH} radius={18} />
+      {/* header */}
+      <div style={{ position: 'absolute', left: ix, top: PY + 22, width: PW - 52, display: 'flex', alignItems: 'center', gap: 12 }}>
+        <BrandMark size={26} />
+        <div>
+          <div style={{ fontFamily: MONO, fontSize: 10, fontWeight: 600, letterSpacing: '0.22em', color: V.faint }}>VYREXADS · ANALYTICS</div>
+          <div style={{ fontFamily: FONT, fontSize: 19, fontWeight: 800, color: V.ink2, letterSpacing: '-0.02em', marginTop: 2 }}>Marketing performance</div>
+        </div>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', borderRadius: 10,
+          background: '#111', color: '#fff', fontFamily: FONT, fontSize: 13, fontWeight: 700 }}>
+          <span style={{ width: 7, height: 7, borderRadius: 7, background: V.green }} /> Live
+        </div>
+      </div>
+
+      {/* KPI row */}
+      {kpis.map((k, i) => {
+        const p = clamp((kpiProg - i * 0.04) / (1 - 0.12), 0, 1);
+        const shown = k.fmtK ? (k.to * Easing.easeOutCubic(p)) / 1000 : null;
+        return (
+          <div key={k.label} style={{ position: 'absolute', left: ix + i * kpiW + (i === 0 ? 0 : 22), top: PY + 96, width: kpiW - 22,
+            borderLeft: i === 0 ? 'none' : `1px solid ${V.borderSoft}`, paddingLeft: i === 0 ? 0 : 22 }}>
+            <div style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: V.faint }}>{k.label}</div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, marginTop: 7 }}>
+              {k.fmtK
+                ? <span style={{ fontFamily: FONT, fontWeight: 800, fontSize: 32, color: V.ink2, letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>{fmtNum(shown, 0)}K</span>
+                : <CountUp to={k.to} progress={p} decimals={k.decimals} suffix={k.suffix} size={32} />}
+              <span style={{ fontSize: 13, fontWeight: 700, color: V.greenInk, opacity: clamp((p - 0.5) / 0.3, 0, 1) }}>{k.delta}</span>
+            </div>
+          </div>
+        );
+      })}
+
+      {/* divider */}
+      <div style={{ position: 'absolute', left: ix, top: PY + 184, width: PW - 52, height: 1, background: V.borderSoft }} />
+
+      {/* big line chart */}
+      <div style={{ position: 'absolute', left: ix, top: PY + 210 }}>
+        <div style={{ fontFamily: FONT, fontSize: 13, fontWeight: 700, color: V.ink2, marginBottom: 6 }}>Engagement · last 30 days</div>
+        <LineChart progress={chartProg} w={640} h={300} color={V.green}
+          pts={[20, 26, 23, 32, 29, 30, 41, 38, 49, 45, 58, 54, 67, 72, 64, 80, 88, 84, 96]} strokeW={3.5} />
+      </div>
+
+      {/* right column: ring + bars */}
+      <div style={{ position: 'absolute', left: PX + 726, top: PY + 230, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 22 }}>
+        <Ring progress={clamp((localTime - 0.7) / 1.8, 0, 1)} to={92} size={150} color={V.green} label="On-target posts" suffix="%" />
+        <div style={{ width: 280, borderTop: `1px solid ${V.borderSoft}`, paddingTop: 18 }}>
+          <div style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: V.ink2, marginBottom: 10 }}>Conversions by channel</div>
+          <Bars progress={clamp((localTime - 0.9) / 1.6, 0, 1)} w={280} h={120} color={V.blue}
+            data={[42, 58, 50, 76, 68, 92, 88]} />
+        </div>
+      </div>
+    </React.Fragment>
+  );
+}
+
+function SceneAnalytics() {
+  const { localTime, duration } = useSprite();
+  const shell = shellAnim(localTime, duration, { inDur: 0.4 });
+  return (
+    <div style={{ position: 'absolute', inset: 0, ...shell }}>
+      <Kicker x={135} y={300} color={V.green}>ANALYTICS</Kicker>
+      <Headline lines={['Measure', 'every result.']} x={133} y={340} size={72} />
+      <SubLine x={135} y={540} w={470}>Reach, engagement, ROAS and conversions — every channel in one live dashboard.</SubLine>
+      <AnalyticsPanel localTime={localTime} />
+    </div>
+  );
+}
+
+// ════════════════════════ SCENE 5 — SELF-IMPROVING LOOP ════════════════════
+function SceneImprove() {
+  const { localTime, duration } = useSprite();
+  const shell = shellAnim(localTime, duration, { inDur: 0.4, outDur: 0.3 });
+  const cx = 1360, cy = 540, R = 168;
+  const nodes = [
+    { label: 'Measure', sub: 'performance', ang: -90, c: V.green },
+    { label: 'Learn', sub: 'what works', ang: 30, c: V.violet },
+    { label: 'Create', sub: 'better posts', ang: 150, c: V.blue },
+  ];
+  // traveling spark
+  const sparkAng = -90 + (localTime * 200);
+  const sa = sparkAng * Math.PI / 180;
+  const spx = cx + Math.cos(sa) * R, spy = cy + Math.sin(sa) * R;
+  const ringP = clamp(localTime / 0.6, 0, 1);
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, ...shell }}>
+      <Kicker x={135} y={332} color={V.green}>SELF-IMPROVING</Kicker>
+      <Headline lines={['It learns from', 'every result —', 'and improves the', 'next post.']} x={133} y={372} size={62} />
+
+      {/* loop */}
+      <svg style={{ position: 'absolute', left: 0, top: 0 }} width={1920} height={1080}>
+        <circle cx={cx} cy={cy} r={R} fill="none" stroke="rgba(255,255,255,0.14)" strokeWidth="2" strokeDasharray="2 8" strokeLinecap="round" />
+        <circle cx={cx} cy={cy} r={R} fill="none" stroke={V.green} strokeWidth="3"
+          pathLength="1" strokeDasharray="1" strokeDashoffset={1 - ringP}
+          transform={`rotate(-90 ${cx} ${cy})`} strokeLinecap="round" opacity="0.6" />
+        {/* spark */}
+        <circle cx={spx} cy={spy} r="13" fill={V.green} opacity="0.22" />
+        <circle cx={spx} cy={spy} r="6" fill={V.green} stroke="#fff" strokeWidth="2" />
+      </svg>
+
+      {/* nodes */}
+      {nodes.map((nd, i) => {
+        const a = nd.ang * Math.PI / 180;
+        const nx = cx + Math.cos(a) * R, ny = cy + Math.sin(a) * R;
+        const lp = clamp((localTime - 0.2 - i * 0.14) / 0.4, 0, 1);
+        const e = Easing.easeOutBack(lp);
+        return (
+          <div key={i} style={{ position: 'absolute', left: nx, top: ny, transform: `translate(-50%,-50%) scale(${e})`, opacity: lp }}>
+            <div style={{ background: '#fff', border: `1px solid ${V.border}`, borderRadius: 14, padding: '12px 18px',
+              boxShadow: '0 12px 30px -10px rgba(0,0,0,0.5)', fontFamily: FONT, textAlign: 'center', minWidth: 116 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7 }}>
+                <span style={{ width: 8, height: 8, borderRadius: 8, background: nd.c }} />
+                <span style={{ fontSize: 16, fontWeight: 800, color: V.ink2, letterSpacing: '-0.01em' }}>{nd.label}</span>
+              </div>
+              <div style={{ fontSize: 11.5, color: V.muted, marginTop: 3 }}>{nd.sub}</div>
+            </div>
+          </div>
+        );
+      })}
+
+      {/* center delta */}
+      <div style={{ position: 'absolute', left: cx, top: cy, transform: 'translate(-50%,-50%)', textAlign: 'center',
+        opacity: clamp((localTime - 0.5) / 0.4, 0, 1) }}>
+        <div style={{ fontFamily: FONT, fontWeight: 800, fontSize: 52, color: V.green, letterSpacing: '-0.03em',
+          display: 'flex', alignItems: 'center', gap: 6 }}>
+          <svg width="30" height="30" viewBox="0 0 12 12"><path d="M6 2l4 5H7v3H5V7H2z" fill={V.green} /></svg>
+          <CountUp to={41} progress={clamp((localTime - 0.5) / 1.0, 0, 1)} suffix="%" size={52} color={V.green} weight={800} />
+        </div>
+        <div style={{ fontFamily: FONT, fontSize: 14, fontWeight: 600, color: 'rgba(255,255,255,0.7)', marginTop: 2 }}>reach, every cycle</div>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════ SCENE 6 — END CARD ═══════════════════════════
+function SceneEnd() {
+  const { localTime, duration } = useSprite();
+  const t = useTime();
+  const inP = Easing.easeOutBack(clamp(localTime / 0.6, 0, 1));
+  const words = ['Create.', 'Post.', 'Perform.'];
+  const pulse = 1 + Math.sin(t * 2) * 0.015;
+  return (
+    <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center', gap: 0 }}>
+      {/* lockup */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 22, transform: `scale(${(0.85 + 0.15 * inP) * pulse})`, opacity: clamp(localTime / 0.4, 0, 1) }}>
+        <BrandMark size={92} glow />
+        <span style={{ fontFamily: FONT, fontSize: 84, fontWeight: 800, letterSpacing: '-0.04em', color: '#fff' }}>Vyrexads</span>
+      </div>
+
+      {/* tagline */}
+      <div style={{ display: 'flex', gap: 22, marginTop: 38 }}>
+        {words.map((w, i) => {
+          const lp = clamp((localTime - 0.45 - i * 0.16) / 0.4, 0, 1);
+          const e = Easing.easeOutBack(lp);
+          const col = [V.blue, V.violet, V.green][i];
+          return (
+            <span key={i} style={{ fontFamily: FONT, fontSize: 44, fontWeight: 800, letterSpacing: '-0.03em',
+              color: col, opacity: lp, transform: `translateY(${(1 - e) * 20}px) scale(${0.9 + 0.1 * e})`, display: 'inline-block' }}>{w}</span>
+          );
+        })}
+      </div>
+
+      {/* CTA */}
+      <div style={{ marginTop: 46, opacity: clamp((localTime - 1.0) / 0.4, 0, 1),
+        transform: `translateY(${(1 - clamp((localTime - 1.0) / 0.4, 0, 1)) * 16}px)` }}>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 12, padding: '16px 30px', borderRadius: 999,
+          background: '#fff', fontFamily: FONT, fontSize: 23, fontWeight: 700, color: '#111',
+          boxShadow: `0 0 40px ${V.blue}33, 0 16px 40px -12px rgba(0,0,0,0.6)` }}>
+          vyrexads.com
+          <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 30, height: 30, borderRadius: 999, background: '#111' }}>
+            <svg width="14" height="14" viewBox="0 0 14 14"><path d="M3 7h7M7 3l4 4-4 4" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" /></svg>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { AnalyticsPanel, SceneAnalytics, SceneImprove, SceneEnd });
+
+//# sourceURL=scenes_b.jsx
+  </script>
+
+  <!-- Inlined from scenes_c.jsx -->
+  <script type="text/babel" data-presets="env,react">
+// scenes_c.jsx — transition scene: scattered data swirls + collapses into the logo.
+// Loaded after scenes_b.jsx, before app.jsx.
+
+// ── small scattered data widgets ────────────────────────────────────────────
+function MiniWidget({ type, data }) {
+  const wrap = (w, h, children) => (
+    <div style={{ width: w, height: h, background: '#fff', border: `1px solid ${V.border}`, borderRadius: 11,
+      boxShadow: '0 12px 28px -12px rgba(0,0,0,0.45)', fontFamily: FONT, overflow: 'hidden', padding: 12, boxSizing: 'border-box' }}>{children}</div>
+  );
+  if (type === 'stat') {
+    return wrap(168, 92, (
+      <React.Fragment>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', color: V.faint, textTransform: 'uppercase' }}>{data.label}</div>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginTop: 8 }}>
+          <span style={{ fontSize: 26, fontWeight: 800, color: V.ink2, letterSpacing: '-0.02em' }}>{data.value}</span>
+          {data.delta && <span style={{ fontSize: 12, fontWeight: 700, color: V.greenInk }}>{data.delta}</span>}
+        </div>
+        <div style={{ marginTop: 8, height: 4, borderRadius: 4, background: V.borderSoft }}>
+          <div style={{ width: data.bar || '64%', height: '100%', borderRadius: 4, background: data.c || V.blue }} />
+        </div>
+      </React.Fragment>
+    ));
+  }
+  if (type === 'line') {
+    const pts = data.pts || [14, 20, 16, 26, 22, 32, 28, 40];
+    const w = 176, h = 92, pad = 12;
+    const min = Math.min(...pts), max = Math.max(...pts);
+    const xs = pts.map((p, i) => pad + (i / (pts.length - 1)) * (w - pad * 2));
+    const ys = pts.map(v => h - pad - ((v - min) / (max - min || 1)) * (h - pad * 2 - 10));
+    let d = `M ${xs[0]} ${ys[0]}`;
+    for (let i = 1; i < pts.length; i++) { const cx = (xs[i - 1] + xs[i]) / 2; d += ` C ${cx} ${ys[i - 1]} ${cx} ${ys[i]} ${xs[i]} ${ys[i]}`; }
+    return wrap(w, h, (
+      <svg width={w - 24} height={h - 24} viewBox={`0 0 ${w} ${h}`} style={{ overflow: 'visible' }}>
+        <path d={`${d} L ${xs[xs.length - 1]} ${h - pad} L ${xs[0]} ${h - pad} Z`} fill={`${data.c || V.green}22`} />
+        <path d={d} fill="none" stroke={data.c || V.green} strokeWidth="2.5" strokeLinecap="round" />
+        <circle cx={xs[xs.length - 1]} cy={ys[ys.length - 1]} r="3.5" fill={data.c || V.green} />
+      </svg>
+    ));
+  }
+  if (type === 'bars') {
+    const vals = data.vals || [30, 50, 38, 64, 56, 80];
+    const w = 152, h = 92, pad = 12, gap = 7;
+    const max = Math.max(...vals), bw = (w - pad * 2 - gap * (vals.length - 1)) / vals.length;
+    return wrap(w, h, (
+      <svg width={w - 24} height={h - 24} viewBox={`0 0 ${w} ${h}`}>
+        {vals.map((v, i) => { const bh = (v / max) * (h - pad * 2); const last = i === vals.length - 1;
+          return <rect key={i} x={pad + i * (bw + gap)} y={h - pad - bh} width={bw} height={bh} rx="3" fill={last ? (data.c || V.blue) : V.faint2} opacity={last ? 1 : 0.5} />; })}
+      </svg>
+    ));
+  }
+  if (type === 'donut') {
+    const v = data.value || 72, size = 80, stroke = 11, r = (size - stroke) / 2, c = 2 * Math.PI * r;
+    return wrap(150, 92, (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ position: 'relative', width: size, height: size }}>
+          <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+            <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={V.borderSoft} strokeWidth={stroke} />
+            <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={data.c || V.green} strokeWidth={stroke} strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c * (1 - v / 100)} />
+          </svg>
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 800, color: V.ink2 }}>{v}%</div>
+        </div>
+        <div style={{ fontSize: 11, color: V.muted, fontWeight: 600 }}>{data.label || 'rate'}</div>
+      </div>
+    ));
+  }
+  if (type === 'badge') {
+    return (
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: '#fff', border: `1px solid ${V.border}`,
+        borderRadius: 999, padding: '10px 16px', boxShadow: '0 10px 24px -10px rgba(0,0,0,0.4)', fontFamily: FONT }}>
+        <span style={{ width: 8, height: 8, borderRadius: 8, background: data.c || V.green }} />
+        <span style={{ fontSize: 17, fontWeight: 800, color: data.c || V.greenInk, letterSpacing: '-0.01em' }}>{data.value}</span>
+        {data.label && <span style={{ fontSize: 12, color: V.muted, fontWeight: 600 }}>{data.label}</span>}
+      </div>
+    );
+  }
+  return null;
+}
+
+// scattered layout (centers, in canvas coords). center of vortex = (960, 512)
+const CONVERGE_ITEMS = [
+  { x: 470, y: 300, rot: -8, type: 'stat', data: { label: 'Reach', value: '248K', delta: '+38%', c: V.blue, bar: '78%' } },
+  { x: 720, y: 210, rot: 5, type: 'line', data: { c: V.green, pts: [12, 18, 15, 24, 20, 30, 26, 38] } },
+  { x: 1010, y: 250, rot: -4, type: 'badge', data: { value: '1,284', label: 'conv.', c: V.ink2 } },
+  { x: 1240, y: 232, rot: 7, type: 'bars', data: { c: V.blue } },
+  { x: 1470, y: 320, rot: -6, type: 'donut', data: { value: 92, label: 'on-target', c: V.green } },
+  { x: 1540, y: 560, rot: 9, type: 'stat', data: { label: 'ROAS', value: '4.6x', delta: '+0.9', c: V.green, bar: '70%' } },
+  { x: 1330, y: 690, rot: -7, type: 'badge', data: { value: '+41%', label: 'reach', c: V.greenInk } },
+  { x: 1080, y: 730, rot: 6, type: 'line', data: { c: V.violet, pts: [20, 26, 22, 18, 24, 30, 28, 36] } },
+  { x: 800, y: 770, rot: -5, type: 'stat', data: { label: 'CTR', value: '7.9%', delta: '+22%', c: V.violet, bar: '52%' } },
+  { x: 520, y: 690, rot: 8, type: 'bars', data: { c: V.green, vals: [24, 44, 34, 58, 50, 72] } },
+  { x: 410, y: 480, rot: -9, type: 'donut', data: { value: 64, label: 'engaged', c: V.blue } },
+  { x: 700, y: 470, rot: 4, type: 'badge', data: { value: '€1.03', label: 'CPA', c: V.ink2 } },
+  { x: 1240, y: 470, rot: -3, type: 'line', data: { c: V.green, pts: [16, 14, 20, 18, 26, 24, 34, 40] } },
+  { x: 980, y: 470, rot: 6, type: 'stat', data: { label: 'Engagement', value: '7.9%', delta: '+22%', c: V.green, bar: '66%' } },
+];
+
+function SceneConverge() {
+  const { localTime, duration } = useSprite();
+  const t = useTime();
+  const CX = 960, CY = 512;
+
+  // phases
+  const appear = clamp(localTime / 0.45, 0, 1);              // chips pop in
+  const converge = Easing.easeInCubic(clamp((localTime - 1.5) / 1.15, 0, 1)); // swirl to center
+  const logoP = Easing.easeOutBack(clamp((localTime - 2.0) / 0.85, 0, 1));    // mark grows
+  const sceneIn = clamp(localTime / 0.3, 0, 1);
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, opacity: sceneIn }}>
+      {/* faint connecting web while it's busy */}
+      <svg style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }} width={1920} height={1080}>
+        {CONVERGE_ITEMS.map((it, i) => {
+          const a = Math.atan2(it.y - CY, it.x - CX), r0 = Math.hypot(it.x - CX, it.y - CY);
+          const r = r0 * (1 - converge), ang = a + converge * 2.4;
+          const x = CX + Math.cos(ang) * r, y = CY + Math.sin(ang) * r;
+          return <line key={i} x1={CX} y1={CY} x2={x} y2={y} stroke="rgba(255,255,255,0.08)" strokeWidth="1"
+            opacity={(1 - converge) * 0.7 * appear} />;
+        })}
+      </svg>
+
+      {/* scattered widgets swirling into center */}
+      {CONVERGE_ITEMS.map((it, i) => {
+        const a = Math.atan2(it.y - CY, it.x - CX), r0 = Math.hypot(it.x - CX, it.y - CY);
+        const r = r0 * (1 - converge), ang = a + converge * 2.4;
+        const x = CX + Math.cos(ang) * r, y = CY + Math.sin(ang) * r;
+        const pop = Easing.easeOutBack(clamp((appear - i * 0.015) / (1 - 0.2), 0, 1));
+        const jit = (1 - converge) * Math.sin(t * 3 + i) * 3;
+        const scale = (0.6 + 0.4 * pop) * (1 - 0.78 * converge);
+        const op = appear * (1 - clamp((converge - 0.55) / 0.4, 0, 1));
+        return (
+          <div key={i} style={{ position: 'absolute', left: x + jit, top: y, transform: `translate(-50%,-50%) rotate(${it.rot * (1 - converge) + converge * 180}deg) scale(${scale})`,
+            opacity: op, transformOrigin: 'center', willChange: 'transform, opacity' }}>
+            <MiniWidget type={it.type} data={it.data} />
+          </div>
+        );
+      })}
+
+      {/* central glow as things collapse */}
+      <div style={{ position: 'absolute', left: CX, top: CY,
+        width: 620, height: 620, borderRadius: 999, pointerEvents: 'none',
+        background: `radial-gradient(circle, ${V.blue}40, ${V.violet}1f 40%, transparent 66%)`,
+        opacity: clamp((converge - 0.3) / 0.5, 0, 1) * (1 - clamp((localTime - duration + 0.4) / 0.4, 0, 1)),
+        transform: `translate(-50%,-50%) scale(${0.5 + converge})` }} />
+
+      {/* swirl ring forming */}
+      <svg style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }} width={1920} height={1080}>
+        <circle cx={CX} cy={CY} r={70 + (1 - logoP) * 40} fill="none" stroke={V.blue} strokeWidth="2.5"
+          strokeDasharray="3 10" strokeLinecap="round" opacity={clamp((converge - 0.4) / 0.4, 0, 1) * 0.6}
+          transform={`rotate(${t * 120} ${CX} ${CY})`} />
+      </svg>
+
+      {/* the logo forms at the vortex center */}
+      <div style={{ position: 'absolute', left: CX, top: CY, transform: `translate(-50%,-50%) scale(${0.2 + 0.8 * logoP})`,
+        opacity: clamp((localTime - 2.0) / 0.4, 0, 1) }}>
+        <BrandMark size={104} glow />
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { MiniWidget, SceneConverge });
+
+//# sourceURL=scenes_c.jsx
+  </script>
+
+  <!-- Inlined from app.jsx -->
+  <script type="text/babel" data-presets="env,react">
+// app.jsx — composes the Vyrexads ad timeline. Loaded last.
+
+const DUR = 25.0;
+
+// background whose accent glow shifts color per phase
+function AdBackground() {
+  const t = useTime();
+  const { a, b } = colorPhase(t, [
+    { t: 0, a: V.red, b: V.amber },
+    { t: 4.2, a: V.violet, b: V.blue },
+    { t: 9, a: V.blue, b: V.green },
+    { t: 13.2, a: V.green, b: V.blue },
+    { t: 17.4, a: V.green, b: V.green },
+    { t: 19.4, a: V.blue, b: V.violet },
+    { t: DUR, a: V.blue, b: V.violet },
+  ]);
+  return <GlowBg accent={a} accent2={b} />;
+}
+
+// sets data-screen-label = timecode each second (for review comments)
+function TimecodeTag() {
+  const t = useTime();
+  const sec = Math.floor(t);
+  React.useEffect(() => {
+    const el = document.getElementById('ad-root');
+    if (el) {
+      const mm = String(Math.floor(sec / 60)).padStart(2, '0');
+      const ss = String(sec % 60).padStart(2, '0');
+      el.setAttribute('data-screen-label', `${mm}:${ss}`);
+    }
+  }, [sec]);
+  return null;
+}
+
+// persistent corner brand (fades out on end card)
+function CornerBrand() {
+  const t = useTime();
+  const op = t < 19.0 ? clamp((t - 0.2) / 0.5, 0, 1) : clamp(1 - (t - 19.0) / 0.4, 0, 1);
+  return (
+    <div style={{ position: 'absolute', left: 60, top: 56, opacity: op * 0.92, display: 'flex', alignItems: 'center', gap: 11 }}>
+      <BrandMark size={32} />
+      <span style={{ fontFamily: FONT, fontSize: 21, fontWeight: 800, letterSpacing: '-0.03em', color: '#fff' }}>Vyrexads</span>
+    </div>
+  );
+}
+
+// progress dots (one per scene)
+function ProgressDots() {
+  const t = useTime();
+  const op = t < 19.0 ? clamp((t - 0.4) / 0.5, 0, 1) : clamp(1 - (t - 19.0) / 0.4, 0, 1);
+  const bounds = [[0, 4.3], [4.15, 9.0], [8.9, 13.3], [13.2, 17.5], [17.4, 19.5]];
+  const active = bounds.findIndex(([s, e]) => t >= s && t < e);
+  return (
+    <div style={{ position: 'absolute', left: '50%', bottom: 46, transform: 'translateX(-50%)', display: 'flex', gap: 9, opacity: op }}>
+      {bounds.map((_, i) => (
+        <div key={i} style={{ width: i === active ? 26 : 7, height: 7, borderRadius: 7,
+          background: i === active ? '#fff' : 'rgba(255,255,255,0.28)', transition: 'width 0.3s' }} />
+      ))}
+    </div>
+  );
+}
+
+function Ad() {
+  return (
+    <div id="ad-root" data-screen-label="00:00" style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
+      <AdBackground />
+      <TimecodeTag />
+
+      <Sprite start={0} end={4.3}><SceneProblem /></Sprite>
+      <Sprite start={4.15} end={9.0}><SceneAICreate /></Sprite>
+      <Sprite start={8.9} end={13.3}><SceneSchedule /></Sprite>
+      <Sprite start={13.2} end={17.5}><SceneAnalytics /></Sprite>
+      <Sprite start={17.4} end={19.5}><SceneImprove /></Sprite>
+      <Sprite start={19.4} end={22.7}><SceneConverge /></Sprite>
+      <Sprite start={22.55} end={DUR + 0.5}><SceneEnd /></Sprite>
+
+      <CornerBrand />
+      <ProgressDots />
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <Stage width={1920} height={1080} duration={DUR} background="#0A0B0D" persistKey="vyrexads-ad">
+      <Ad />
+    </Stage>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+
+//# sourceURL=app.jsx
+  </script>
+
+</body>
+</html>

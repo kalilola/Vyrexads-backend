@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vyrexads — Motion Ad</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #08080c; overflow: hidden; }
+    #root { position: absolute; inset: 0; width: 100%; height: 100%; }
+    :root { font-synthesis: none; }
+    noscript { color: #fff; font-family: system-ui, sans-serif; padding: 24px; display: block; }
+  </style>
+  <template id="__bundler_thumbnail">
+    <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+      <rect width="100" height="100" fill="#0B0B10" />
+      <rect x="30" y="30" width="40" height="40" rx="11" fill="#3D3DFF" />
+      <path d="M52 38 L42 53 H50 L48 64 L60 47 H52 Z" fill="#fff" />
+    </svg>
+  </template>
+</head>
+<body>
+  <noscript>Activez JavaScript pour lire cette animation.</noscript>
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+
+  <script>
+// VyrexadsAd.jsx — 30s 16:9 motion ad for Vyrexads. Self-contained: timeline
+// engine (trimmed from animations.jsx) + brand atoms + scenes. Registers window.VyrexadsAd.
+// ───────────────────────── Engine ─────────────────────────
+const Easing = {
+    linear: (t) => t,
+    easeInQuad: (t) => t * t,
+    easeOutQuad: (t) => t * (2 - t),
+    easeInCubic: (t) => t * t * t,
+    easeOutCubic: (t) => (--t) * t * t + 1,
+    easeInOutCubic: (t) => (t < 0.5 ? 4 * t * t * t : (t - 1) * (2 * t - 2) * (2 * t - 2) + 1),
+    easeOutQuart: (t) => 1 - (--t) * t * t * t,
+    easeInExpo: (t) => (t === 0 ? 0 : Math.pow(2, 10 * (t - 1))),
+    easeOutExpo: (t) => (t === 1 ? 1 : 1 - Math.pow(2, -10 * t)),
+    easeInOutExpo: (t) => {
+        if (t === 0)
+            return 0;
+        if (t === 1)
+            return 1;
+        if (t < 0.5)
+            return 0.5 * Math.pow(2, 20 * t - 10);
+        return 1 - 0.5 * Math.pow(2, -20 * t + 10);
+    },
+    easeOutSine: (t) => Math.sin((t * Math.PI) / 2),
+    easeInOutSine: (t) => -(Math.cos(Math.PI * t) - 1) / 2,
+    easeOutBack: (t) => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); },
+    easeInBack: (t) => { const c1 = 1.70158, c3 = c1 + 1; return c3 * t * t * t - c1 * t * t; },
+    easeOutElastic: (t) => { const c4 = (2 * Math.PI) / 3; if (t === 0)
+        return 0; if (t === 1)
+        return 1; return Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * c4) + 1; },
+};
+const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+function animate({ from = 0, to = 1, start = 0, end = 1, ease = Easing.easeInOutCubic }) {
+    return (t) => { if (t <= start)
+        return from; if (t >= end)
+        return to; const l = (t - start) / (end - start); return from + (to - from) * ease(l); };
+}
+function interpolate(input, output, ease = Easing.linear) {
+    return (t) => {
+        if (t <= input[0])
+            return output[0];
+        if (t >= input[input.length - 1])
+            return output[output.length - 1];
+        for (let i = 0; i < input.length - 1; i++) {
+            if (t >= input[i] && t <= input[i + 1]) {
+                const span = input[i + 1] - input[i];
+                const local = span === 0 ? 0 : (t - input[i]) / span;
+                const ef = Array.isArray(ease) ? (ease[i] || Easing.linear) : ease;
+                return output[i] + (output[i + 1] - output[i]) * ef(local);
+            }
+        }
+        return output[output.length - 1];
+    };
+}
+const TimelineContext = React.createContext({ time: 0, duration: 30, playing: false });
+const useTime = () => React.useContext(TimelineContext).time;
+const useTimeline = () => React.useContext(TimelineContext);
+const SpriteContext = React.createContext({ localTime: 0, progress: 0, duration: 0 });
+const useSprite = () => React.useContext(SpriteContext);
+// Scene-local time offset: nested <Sprite>s inside a scene use times relative to the scene start.
+const SceneBaseContext = React.createContext(0);
+function Sprite({ start = 0, end = Infinity, children }) {
+    const { time } = useTimeline();
+    const base = React.useContext(SceneBaseContext);
+    const s = start + base;
+    const e = isFinite(end) ? end + base : end;
+    if (time < s || time > e)
+        return null;
+    const duration = e - s;
+    const localTime = Math.max(0, time - s);
+    const progress = duration > 0 && isFinite(duration) ? clamp(localTime / duration, 0, 1) : 0;
+    const value = { localTime, progress, duration };
+    return React.createElement(SpriteContext.Provider, { value: value }, typeof children === 'function' ? children(value) : children);
+}
+// Gates a scene to [start,end] AND makes nested sprites scene-local.
+function SceneSlot({ start, end, children }) {
+    return React.createElement(Sprite, { start: start, end: end },
+        React.createElement(SceneBaseContext.Provider, { value: start }, children));
+}
+// ───────────────────────── Brand ─────────────────────────
+const INK = '#0B0B10', INK2 = '#16161D', INDIGO = '#3D3DFF', INDIGO_D = '#2A21D6', VIOLET = '#7C5CFF', GREEN = '#10C079', PAPER = '#F4F4F7', WHITE = '#FFFFFF', LINE = '#E7E7EE', MUT = '#6E6E7A', MUT2 = '#9C9CA8', INKSOFT = '#1E1E27';
+const SANS = '"Space Grotesk", system-ui, -apple-system, sans-serif';
+const UI = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+const MONO = '"Roboto Mono", ui-monospace, SFMono-Regular, monospace';
+const W = 1920, H = 1080;
+// ───────────────────────── Helpers ─────────────────────────
+// Fade/slide/pop a child in at a local delay (inside a Sprite).
+function In({ d = 0, dur = 0.5, y = 22, x = 0, from = 1, ease = Easing.easeOutCubic, style, children }) {
+    const { localTime } = useSprite();
+    const p = ease(clamp((localTime - d) / dur, 0, 1));
+    const sc = from + (1 - from) * p;
+    return React.createElement("div", { style: { ...style, opacity: clamp(p, 0, 1), transform: `translate(${x * (1 - p)}px, ${y * (1 - p)}px) scale(${sc})` } }, children);
+}
+// Animated number inside a Sprite.
+function Num({ from = 0, to, d = 0, dur = 1.1, ease = Easing.easeOutExpo, fmt = (v) => Math.round(v) }) {
+    const { localTime } = useSprite();
+    const p = ease(clamp((localTime - d) / dur, 0, 1));
+    return fmt(from + (to - from) * p);
+}
+// Slow scene-wide zoom for "always in motion" feel.
+function Zoom({ from = 1, to = 1.05, origin = 'center', children }) {
+    const { progress } = useSprite();
+    const s = from + (to - from) * progress;
+    return React.createElement("div", { style: { position: 'absolute', inset: 0, transform: `scale(${s})`, transformOrigin: origin } }, children);
+}
+function Bg({ color }) { return React.createElement("div", { style: { position: 'absolute', inset: 0, background: color } }); }
+// Quick fade at the scene edges so cuts don't pop harshly.
+function Fade({ inDur = 0.25, outDur = 0.25, children }) {
+    const { localTime, duration } = useSprite();
+    let o = 1;
+    if (localTime < inDur)
+        o = localTime / inDur;
+    else if (localTime > duration - outDur)
+        o = clamp((duration - localTime) / outDur, 0, 1);
+    return React.createElement("div", { style: { position: 'absolute', inset: 0, opacity: o } }, children);
+}
+// Lightning bolt mark in rounded square — the Vyrexads logo.
+function Logo({ size = 44, dark = false, showWord = true, white = false }) {
+    const sqBg = white ? WHITE : INK;
+    const boltFill = white ? INK : WHITE;
+    const word = white ? WHITE : (dark ? WHITE : INK);
+    return (React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: size * 0.34 } },
+        React.createElement("div", { style: { width: size, height: size, borderRadius: size * 0.28, background: sqBg, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: white ? 'none' : '0 6px 18px rgba(61,61,255,0.0)' } },
+            React.createElement("svg", { width: size * 0.5, height: size * 0.5, viewBox: "0 0 24 24", fill: "none" },
+                React.createElement("path", { d: "M13 2 L4 13.5 H10.5 L9 22 L20 9.5 H13 Z", fill: boltFill }))),
+        showWord && (React.createElement("div", { style: { display: 'flex', alignItems: 'baseline', gap: size * 0.13 } },
+            React.createElement("span", { style: { fontFamily: SANS, fontWeight: 700, fontSize: size * 0.62, letterSpacing: '-0.02em', color: word } }, "Vyrexads"),
+            React.createElement("span", { style: { fontFamily: MONO, fontSize: size * 0.26, color: white ? 'rgba(255,255,255,0.5)' : MUT2 } }, "v2")))));
+}
+// Section kicker: NN — LABEL
+function Kicker({ n, label, sub }) {
+    return (React.createElement("div", null,
+        React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 16 } },
+            React.createElement("span", { style: { fontFamily: MONO, fontSize: 22, fontWeight: 500, color: INDIGO, background: 'rgba(61,61,255,0.10)', padding: '6px 12px', borderRadius: 8 } }, n),
+            React.createElement("span", { style: { fontFamily: MONO, fontSize: 22, letterSpacing: '0.22em', color: MUT, textTransform: 'uppercase' } }, label)),
+        sub && React.createElement("div", { style: { fontFamily: SANS, fontWeight: 600, fontSize: 58, letterSpacing: '-0.025em', color: INK, marginTop: 22, lineHeight: 1.04, maxWidth: 720 } }, sub)));
+}
+// Small platform tag with colored dot.
+function Plat({ name, color, on = true }) {
+    return (React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 9, padding: '8px 14px', borderRadius: 999, background: WHITE, border: `1px solid ${LINE}`, opacity: on ? 1 : 0.4 } },
+        React.createElement("span", { style: { width: 10, height: 10, borderRadius: 999, background: color } }),
+        React.createElement("span", { style: { fontFamily: UI, fontSize: 19, fontWeight: 500, color: INKSOFT } }, name)));
+}
+// Media-type glyph (kept to simple geometry).
+function MediaIcon({ kind, color = MUT2 }) {
+    if (kind === 'video')
+        return React.createElement("svg", { width: "40", height: "40", viewBox: "0 0 24 24", fill: "none" },
+            React.createElement("rect", { x: "2.5", y: "6", width: "13", height: "12", rx: "2.5", stroke: color, strokeWidth: "1.6" }),
+            React.createElement("path", { d: "M16 10.5 L21.5 7.5 V16.5 L16 13.5 Z", stroke: color, strokeWidth: "1.6", strokeLinejoin: "round" }));
+    if (kind === 'carousel')
+        return React.createElement("svg", { width: "40", height: "40", viewBox: "0 0 24 24", fill: "none" },
+            React.createElement("rect", { x: "6", y: "5", width: "12", height: "14", rx: "2", stroke: color, strokeWidth: "1.6" }),
+            React.createElement("path", { d: "M3.5 8 V16 M20.5 8 V16", stroke: color, strokeWidth: "1.6", strokeLinecap: "round" }));
+    return React.createElement("svg", { width: "40", height: "40", viewBox: "0 0 24 24", fill: "none" },
+        React.createElement("rect", { x: "3.5", y: "5", width: "17", height: "14", rx: "2.5", stroke: color, strokeWidth: "1.6" }),
+        React.createElement("circle", { cx: "9", cy: "10", r: "1.8", stroke: color, strokeWidth: "1.4" }),
+        React.createElement("path", { d: "M5 17 L10 12.5 L14 15.5 L17 12 L20 15", stroke: color, strokeWidth: "1.6", strokeLinejoin: "round", strokeLinecap: "round" }));
+}
+// Content card matching the Vyrexads "Contenus" grid.
+function ContentCard({ media = 'image', caption, typeLabel, typeColor, typeBg, plat, title, date, w = 300, scored }) {
+    return (React.createElement("div", { style: { width: w, background: WHITE, border: `1px solid ${LINE}`, borderRadius: 16, boxShadow: '0 10px 30px rgba(15,15,30,0.07)', overflow: 'hidden', position: 'relative' } },
+        React.createElement("div", { style: { height: w * 0.52, background: 'repeating-linear-gradient(135deg,#F0F0F4 0 11px,#E9E9F0 11px 22px)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10 } },
+            React.createElement(MediaIcon, { kind: media }),
+            React.createElement("span", { style: { fontFamily: MONO, fontSize: 13, letterSpacing: '0.12em', color: MUT2, textTransform: 'uppercase' } }, caption)),
+        React.createElement("div", { style: { padding: '16px 18px 18px' } },
+            React.createElement("div", { style: { display: 'flex', gap: 8, marginBottom: 12 } },
+                React.createElement("span", { style: { fontFamily: UI, fontSize: 14, fontWeight: 600, color: typeColor, background: typeBg, padding: '4px 10px', borderRadius: 7 } }, typeLabel),
+                React.createElement("span", { style: { fontFamily: UI, fontSize: 14, color: INKSOFT, border: `1px solid ${LINE}`, padding: '4px 10px', borderRadius: 7 } }, plat)),
+            React.createElement("div", { style: { fontFamily: UI, fontSize: 21, fontWeight: 600, color: INK, lineHeight: 1.15, letterSpacing: '-0.01em' } }, title),
+            React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 16 } },
+                React.createElement("span", { style: { fontFamily: MONO, fontSize: 14, color: MUT } }, date),
+                scored && React.createElement("span", { style: { fontFamily: MONO, fontSize: 14, fontWeight: 600, color: GREEN } }, scored)))));
+}
+// Stat tile for analytics.
+function Stat({ label, children, accent, w = 300 }) {
+    return (React.createElement("div", { style: { width: w, background: WHITE, border: `1px solid ${LINE}`, borderRadius: 16, padding: '22px 24px', boxShadow: '0 8px 24px rgba(15,15,30,0.05)' } },
+        React.createElement("div", { style: { fontFamily: MONO, fontSize: 14, letterSpacing: '0.14em', color: MUT, textTransform: 'uppercase' } }, label),
+        React.createElement("div", { style: { fontFamily: SANS, fontWeight: 600, fontSize: 52, letterSpacing: '-0.03em', color: accent || INK, marginTop: 8, fontVariantNumeric: 'tabular-nums' } }, children)));
+}
+function ArrowBadge({ children }) {
+    return React.createElement("span", { style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: MONO, fontSize: 17, fontWeight: 600, color: GREEN } },
+        React.createElement("svg", { width: "14", height: "14", viewBox: "0 0 14 14", fill: "none" },
+            React.createElement("path", { d: "M7 11 V3 M3 6.5 L7 2.5 L11 6.5", stroke: GREEN, strokeWidth: "1.8", strokeLinecap: "round", strokeLinejoin: "round" })),
+        children);
+}
+// ───────────────────────── Backgrounds in motion ─────────────────────────
+function DarkBlobs() {
+    const t = useTime();
+    const a = (Math.sin(t * 0.5) + 1) / 2, b = (Math.cos(t * 0.4) + 1) / 2;
+    return (React.createElement("div", { style: { position: 'absolute', inset: 0, overflow: 'hidden' } },
+        React.createElement("div", { style: { position: 'absolute', width: 1100, height: 1100, left: -200 + a * 140, top: -300 + b * 120, borderRadius: '50%', background: 'radial-gradient(circle, rgba(61,61,255,0.30), transparent 62%)', filter: 'blur(20px)' } }),
+        React.createElement("div", { style: { position: 'absolute', width: 900, height: 900, right: -150 - a * 120, bottom: -260 + b * 100, borderRadius: '50%', background: 'radial-gradient(circle, rgba(124,92,255,0.22), transparent 64%)', filter: 'blur(20px)' } }),
+        React.createElement("div", { style: { position: 'absolute', inset: 0, backgroundImage: `linear-gradient(rgba(255,255,255,0.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,0.035) 1px,transparent 1px)`, backgroundSize: '64px 64px', transform: `translate(${(t * 6) % 64}px, ${(t * 4) % 64}px)` } })));
+}
+// ───────────────────────── Scenes ─────────────────────────
+// 1 — HOOK (0 → 4.0)
+function SceneHook() {
+    return (React.createElement("div", { "data-screen-label": "01 Hook" },
+        React.createElement(Bg, { color: INK }),
+        React.createElement(DarkBlobs, null),
+        React.createElement(Fade, { inDur: 0.2, outDur: 0.3 },
+            React.createElement(Sprite, { start: 0.3, end: 2.25 },
+                React.createElement("div", { style: { position: 'absolute', left: 150, top: 360, width: 1620 } },
+                    React.createElement(In, { d: 0, dur: 0.55, y: 26, from: 0.92, ease: Easing.easeOutBack },
+                        React.createElement("div", { style: { fontFamily: SANS, fontWeight: 700, fontSize: 132, lineHeight: 0.98, letterSpacing: '-0.03em', color: WHITE } }, "Publier au hasard,")),
+                    React.createElement(In, { d: 0.32, dur: 0.5, y: 26, from: 0.92, ease: Easing.easeOutBack },
+                        React.createElement("div", { style: { fontFamily: SANS, fontWeight: 700, fontSize: 132, lineHeight: 1.0, letterSpacing: '-0.03em', color: VIOLET } }, "c'est fini.")))),
+            React.createElement(Sprite, { start: 2.25, end: 4.0 },
+                React.createElement("div", { style: { position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' } },
+                    React.createElement(In, { d: 0, dur: 0.5, y: 20, from: 0.8, ease: Easing.easeOutBack },
+                        React.createElement(Logo, { size: 100, white: true })),
+                    React.createElement("div", { style: { display: 'flex', gap: 26, marginTop: 56, fontFamily: SANS, fontWeight: 600, fontSize: 60, letterSpacing: '-0.02em' } },
+                        React.createElement(In, { d: 0.35, dur: 0.4, y: 18, from: 0.7, ease: Easing.easeOutBack },
+                            React.createElement("span", { style: { color: WHITE } }, "Cr\u00E9er.")),
+                        React.createElement(In, { d: 0.55, dur: 0.4, y: 18, from: 0.7, ease: Easing.easeOutBack },
+                            React.createElement("span", { style: { color: WHITE } }, "Analyser.")),
+                        React.createElement(In, { d: 0.75, dur: 0.4, y: 18, from: 0.7, ease: Easing.easeOutBack },
+                            React.createElement("span", { style: { color: GREEN } }, "Am\u00E9liorer."))),
+                    React.createElement(In, { d: 1.0, dur: 0.5, y: 14 },
+                        React.createElement("div", { style: { fontFamily: MONO, fontSize: 22, letterSpacing: '0.16em', color: 'rgba(255,255,255,0.5)', marginTop: 40, textTransform: 'uppercase' } }, "En boucle. Automatiquement.")))))));
+}
+// 2 — CRÉATION (4.0 → 11.0) — 7s
+function SceneCreate() {
+    const cards = [
+        { media: 'image', caption: 'IMAGE · INSTAGRAM', typeLabel: 'Organique', typeColor: INDIGO, typeBg: 'rgba(61,61,255,0.10)', plat: 'Instagram', title: 'Routine éclat — avant / après', date: 'Mar · 11:00' },
+        { media: 'video', caption: 'VIDÉO · TIKTOK', typeLabel: 'Promotionnel', typeColor: '#B45309', typeBg: 'rgba(245,158,11,0.14)', plat: 'TikTok', title: '3 erreurs qui tuent ton ROAS', date: 'Jeu · 17:00' },
+        { media: 'carousel', caption: 'CARROUSEL · LINKEDIN', typeLabel: 'Informatif', typeColor: INDIGO, typeBg: 'rgba(61,61,255,0.10)', plat: 'LinkedIn', title: 'Le framework création → analyse', date: 'Lun · 08:30' },
+        { media: 'video', caption: 'VIDÉO · YOUTUBE', typeLabel: 'Promotionnel', typeColor: '#B45309', typeBg: 'rgba(245,158,11,0.14)', plat: 'YouTube', title: 'Démo produit en 30 secondes', date: 'Ven · 12:00' },
+    ];
+    const plats = [['Instagram', '#E1306C'], ['TikTok', '#111114'], ['YouTube', '#FF0033'], ['LinkedIn', INDIGO]];
+    return (React.createElement("div", { "data-screen-label": "02 Cr\u00E9ation" },
+        React.createElement(Bg, { color: PAPER }),
+        React.createElement(Fade, null,
+            React.createElement("div", { style: { position: 'absolute', left: 120, top: 110 } },
+                React.createElement(In, { d: 0, dur: 0.5, y: 18 },
+                    React.createElement(Kicker, { n: "01", label: "Cr\u00E9ation", sub: React.createElement("span", null,
+                            "Du contenu ",
+                            React.createElement("span", { style: { color: INDIGO } }, "haute qualit\u00E9"),
+                            ", g\u00E9n\u00E9r\u00E9 pour toi.") }))),
+            React.createElement(Sprite, { start: 0, end: 7 },
+                React.createElement(In, { d: 0.35, dur: 0.5, y: 16 },
+                    React.createElement("div", { style: { position: 'absolute', left: 120, top: 360, width: 760, background: WHITE, border: `1px solid ${LINE}`, borderRadius: 16, boxShadow: '0 12px 36px rgba(15,15,30,0.08)', padding: '20px 22px' } },
+                        React.createElement("div", { style: { fontFamily: MONO, fontSize: 14, letterSpacing: '0.14em', color: MUT, textTransform: 'uppercase' } }, "Brief"),
+                        React.createElement("div", { style: { fontFamily: UI, fontSize: 26, color: INK, marginTop: 8, lineHeight: 1.3 } },
+                            React.createElement(TypeLine, { text: "Campagne de lancement \u2014 4 formats, multi-plateformes", start: 0.7, cps: 36 })),
+                        React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 12, marginTop: 18 } },
+                            React.createElement(Sprite, { start: 2.4, end: 7 },
+                                React.createElement(In, { d: 0, dur: 0.35, from: 0.7, ease: Easing.easeOutBack },
+                                    React.createElement("div", { style: { display: 'inline-flex', alignItems: 'center', gap: 10, background: INK, color: WHITE, fontFamily: UI, fontSize: 19, fontWeight: 600, padding: '12px 20px', borderRadius: 10 } },
+                                        React.createElement("svg", { width: "18", height: "18", viewBox: "0 0 24 24", fill: "none" },
+                                            React.createElement("path", { d: "M12 3 L13.6 9.4 L20 11 L13.6 12.6 L12 19 L10.4 12.6 L4 11 L10.4 9.4 Z", fill: WHITE })),
+                                        "Vyrexads g\u00E9n\u00E8re\u2026"))))))),
+            React.createElement("div", { style: { position: 'absolute', left: 120, top: 620, display: 'flex', gap: 14 } }, plats.map((p, i) => (React.createElement(Sprite, { key: i, start: 2.7 + i * 0.18, end: 7 },
+                React.createElement(In, { d: 0, dur: 0.3, from: 0.7, ease: Easing.easeOutBack },
+                    React.createElement(Plat, { name: p[0], color: p[1] })))))),
+            React.createElement("div", { style: { position: 'absolute', left: 990, top: 150, width: 830, height: 820 } }, cards.map((c, i) => {
+                const col = i % 2, row = Math.floor(i / 2);
+                return (React.createElement(Sprite, { key: i, start: 2.7 + i * 0.42, end: 7 },
+                    React.createElement(In, { d: 0, dur: 0.5, y: 30, from: 0.78, ease: Easing.easeOutBack },
+                        React.createElement("div", { style: { position: 'absolute', left: col * 430, top: row * 420 } },
+                            React.createElement(ContentCard, { ...c, w: 400 })))));
+            })),
+            React.createElement(Sprite, { start: 4.9, end: 7 },
+                React.createElement(In, { d: 0, dur: 0.45, y: 16, from: 0.85, ease: Easing.easeOutBack },
+                    React.createElement("div", { style: { position: 'absolute', left: 120, top: 760, display: 'flex', alignItems: 'baseline', gap: 16 } },
+                        React.createElement("span", { style: { fontFamily: SANS, fontWeight: 700, fontSize: 96, letterSpacing: '-0.03em', color: INDIGO } },
+                            React.createElement(Num, { to: 12, d: 0, dur: 1.0 })),
+                        React.createElement("span", { style: { fontFamily: UI, fontSize: 30, color: INKSOFT, fontWeight: 500 } }, "contenus pr\u00EAts \u00E0 programmer")))))));
+}
+// Typewriter line that respects the parent Sprite's localTime.
+function TypeLine({ text, start = 0, cps = 30 }) {
+    const { localTime } = useSprite();
+    const n = clamp(Math.floor((localTime - start) * cps), 0, text.length);
+    const show = Math.max(0, n);
+    const caret = (localTime - start) >= 0 && show < text.length;
+    return React.createElement("span", null,
+        text.slice(0, show),
+        caret && React.createElement("span", { style: { color: INDIGO } }, "\u258C"));
+}
+// 3 — ANALYSE (11.0 → 18.0) — 7s
+function SceneAnalyze() {
+    // chart points (normalized)
+    const pts = [0.18, 0.30, 0.24, 0.46, 0.40, 0.62, 0.58, 0.80, 0.92];
+    return (React.createElement("div", { "data-screen-label": "03 Analyse" },
+        React.createElement(Bg, { color: PAPER }),
+        React.createElement(Fade, null,
+            React.createElement("div", { style: { position: 'absolute', left: 120, top: 110 } },
+                React.createElement(In, { d: 0, dur: 0.5, y: 18 },
+                    React.createElement(Kicker, { n: "02", label: "Analyse", sub: React.createElement("span", null,
+                            "Les vrais r\u00E9sultats. ",
+                            React.createElement("span", { style: { color: INDIGO } }, "Pas des suppositions.")) }))),
+            React.createElement("div", { style: { position: 'absolute', left: 120, top: 360, display: 'flex', gap: 22 } },
+                React.createElement(Sprite, { start: 0.4, end: 7 },
+                    React.createElement(In, { d: 0, dur: 0.45, y: 22, from: 0.85, ease: Easing.easeOutBack },
+                        React.createElement(Stat, { label: "D\u00E9pense", w: 300 },
+                            React.createElement(Num, { to: 213, d: 0.2, dur: 1.1, fmt: (v) => Math.round(v) + ' €' })))),
+                React.createElement(Sprite, { start: 0.55, end: 7 },
+                    React.createElement(In, { d: 0, dur: 0.45, y: 22, from: 0.85, ease: Easing.easeOutBack },
+                        React.createElement(Stat, { label: "Revenu", w: 300, accent: GREEN },
+                            React.createElement(Num, { to: 1024, d: 0.3, dur: 1.2, fmt: (v) => Math.round(v).toLocaleString('fr-FR') + ' €' })))),
+                React.createElement(Sprite, { start: 0.7, end: 7 },
+                    React.createElement(In, { d: 0, dur: 0.45, y: 22, from: 0.85, ease: Easing.easeOutBack },
+                        React.createElement(Stat, { label: "ROAS", w: 300, accent: INDIGO },
+                            React.createElement(Num, { to: 4.8, d: 0.4, dur: 1.2, fmt: (v) => v.toFixed(1) + 'x' }))))),
+            React.createElement(Sprite, { start: 1.0, end: 7 },
+                React.createElement(In, { d: 0, dur: 0.5, y: 26, from: 0.9, ease: Easing.easeOutBack },
+                    React.createElement("div", { style: { position: 'absolute', left: 120, top: 560, width: 922, height: 380, background: WHITE, border: `1px solid ${LINE}`, borderRadius: 18, boxShadow: '0 12px 36px rgba(15,15,30,0.06)', padding: 28 } },
+                        React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+                            React.createElement("span", { style: { fontFamily: UI, fontSize: 22, fontWeight: 600, color: INK } }, "Performance \u2014 30 jours"),
+                            React.createElement(ArrowBadge, null, "+128 % port\u00E9e organique")),
+                        React.createElement(Chart, { pts: pts, start: 0.3 })))),
+            React.createElement(Sprite, { start: 1.4, end: 7 },
+                React.createElement(In, { d: 0, dur: 0.5, y: 26, from: 0.9, ease: Easing.easeOutBack },
+                    React.createElement("div", { style: { position: 'absolute', left: 1086, top: 360, width: 720, background: WHITE, border: `1px solid ${LINE}`, borderRadius: 18, boxShadow: '0 12px 36px rgba(15,15,30,0.06)', padding: '24px 26px' } },
+                        React.createElement("div", { style: { fontFamily: MONO, fontSize: 14, letterSpacing: '0.14em', color: MUT, textTransform: 'uppercase', marginBottom: 18 } }, "Top cr\u00E9atives \u2014 CTR"),
+                        [['« You\'re the one »', '10,7 %', true], ['Carrousel — framework', '6,2 %', false], ['Démo produit 30s', '4,9 %', false], ['Routine éclat', '3,1 %', false]].map((r, i) => (React.createElement(Sprite, { key: i, start: 0.2 + i * 0.16, end: 7 },
+                            React.createElement(In, { d: 0, dur: 0.4, x: 28 },
+                                React.createElement("div", { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 0', borderBottom: i < 3 ? `1px solid ${LINE}` : 'none' } },
+                                    React.createElement("span", { style: { fontFamily: UI, fontSize: 22, color: INK, fontWeight: r[2] ? 600 : 400 } }, r[0]),
+                                    React.createElement("span", { style: { fontFamily: MONO, fontSize: 22, fontWeight: 600, color: r[2] ? GREEN : MUT, background: r[2] ? 'rgba(16,192,121,0.12)' : 'transparent', padding: r[2] ? '4px 12px' : 0, borderRadius: 8 } }, r[1]))))))))))));
+}
+function Chart({ pts, start = 0 }) {
+    const { localTime } = useSprite();
+    const w = 866, h = 250, padTop = 30;
+    const draw = Easing.easeInOutCubic(clamp((localTime - start) / 1.6, 0, 1));
+    const coords = pts.map((p, i) => [(i / (pts.length - 1)) * w, padTop + (1 - p) * (h - padTop)]);
+    let path = `M ${coords[0][0]} ${coords[0][1]}`;
+    for (let i = 1; i < coords.length; i++) {
+        const [x0, y0] = coords[i - 1], [x1, y1] = coords[i];
+        const cx = (x0 + x1) / 2;
+        path += ` C ${cx} ${y0}, ${cx} ${y1}, ${x1} ${y1}`;
+    }
+    const area = path + ` L ${w} ${h} L 0 ${h} Z`;
+    const totalLen = 1400;
+    const headIdx = clamp(draw * (pts.length - 1), 0, pts.length - 1);
+    const hi = Math.floor(headIdx);
+    const hf = headIdx - hi;
+    const hx = coords[hi][0] + (coords[Math.min(hi + 1, pts.length - 1)][0] - coords[hi][0]) * hf;
+    const hy = coords[hi][1] + (coords[Math.min(hi + 1, pts.length - 1)][1] - coords[hi][1]) * hf;
+    return (React.createElement("svg", { width: w, height: h + 20, style: { marginTop: 22, overflow: 'visible' } },
+        React.createElement("defs", null,
+            React.createElement("linearGradient", { id: "vx-area", x1: "0", y1: "0", x2: "0", y2: "1" },
+                React.createElement("stop", { offset: "0", stopColor: INDIGO, stopOpacity: "0.22" }),
+                React.createElement("stop", { offset: "1", stopColor: INDIGO, stopOpacity: "0" }))),
+        [0.25, 0.5, 0.75].map((g, i) => React.createElement("line", { key: i, x1: "0", y1: padTop + g * (h - padTop), x2: w, y2: padTop + g * (h - padTop), stroke: LINE, strokeWidth: "1" })),
+        React.createElement("path", { d: area, fill: "url(#vx-area)", style: { opacity: draw } }),
+        React.createElement("path", { d: path, fill: "none", stroke: INDIGO, strokeWidth: "4", strokeLinecap: "round", strokeDasharray: totalLen, strokeDashoffset: (1 - draw) * totalLen }),
+        React.createElement("circle", { cx: hx, cy: hy, r: "8", fill: INDIGO, stroke: WHITE, strokeWidth: "3" })));
+}
+// 4 — AMÉLIORATION (18.0 → 24.0) — 6s
+function SceneImprove() {
+    return (React.createElement("div", { "data-screen-label": "04 Am\u00E9lioration" },
+        React.createElement(Bg, { color: PAPER }),
+        React.createElement(Fade, null,
+            React.createElement("div", { style: { position: 'absolute', left: 120, top: 110 } },
+                React.createElement(In, { d: 0, dur: 0.5, y: 18 },
+                    React.createElement(Kicker, { n: "03", label: "Am\u00E9lioration", sub: React.createElement("span", null,
+                            "Chaque post ",
+                            React.createElement("span", { style: { color: GREEN } }, "nourrit"),
+                            " le suivant.") }))),
+            React.createElement("div", { style: { position: 'absolute', left: 120, top: 400 } }, [['Format vidéo', '+ de conversions'], ['Mardi 11 h', 'meilleur créneau'], ['Hook « 3 erreurs »', 'CTR ×2']].map((c, i) => (React.createElement(Sprite, { key: i, start: 0.5 + i * 0.25, end: 6 },
+                React.createElement(In, { d: 0, dur: 0.45, x: -26, from: 0.85, ease: Easing.easeOutBack },
+                    React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 14, width: 560, background: WHITE, border: `1px solid ${LINE}`, borderLeft: `4px solid ${INDIGO}`, borderRadius: 12, padding: '18px 22px', marginBottom: 20, boxShadow: '0 8px 24px rgba(15,15,30,0.05)' } },
+                        React.createElement("svg", { width: "26", height: "26", viewBox: "0 0 24 24", fill: "none" },
+                            React.createElement("path", { d: "M12 3 L13.6 9.4 L20 11 L13.6 12.6 L12 19 L10.4 12.6 L4 11 L10.4 9.4 Z", fill: INDIGO })),
+                        React.createElement("span", { style: { fontFamily: UI, fontSize: 23, color: INK } },
+                            React.createElement("b", { style: { fontWeight: 600 } }, c[0]),
+                            " \u2014 ",
+                            c[1]))))))),
+            React.createElement(Sprite, { start: 1.6, end: 6 },
+                React.createElement(In, { d: 0, dur: 0.5 },
+                    React.createElement("svg", { style: { position: 'absolute', left: 700, top: 470 }, width: "320", height: "200", viewBox: "0 0 320 200", fill: "none" },
+                        React.createElement(FlowArrow, null)))),
+            React.createElement(Sprite, { start: 2.1, end: 6 },
+                React.createElement(In, { d: 0, dur: 0.55, y: 30, from: 0.82, ease: Easing.easeOutBack },
+                    React.createElement("div", { style: { position: 'absolute', left: 1080, top: 360, width: 540 } },
+                        React.createElement("div", { style: { position: 'relative' } },
+                            React.createElement("div", { style: { position: 'absolute', top: -18, right: -10, zIndex: 2, background: GREEN, color: WHITE, fontFamily: MONO, fontSize: 16, fontWeight: 600, padding: '6px 14px', borderRadius: 999, boxShadow: '0 8px 20px rgba(16,192,121,0.35)' } }, "VERSION v2"),
+                            React.createElement(ContentCard, { media: "video", caption: "VID\u00C9O \u00B7 TIKTOK", typeLabel: "Promotionnel", typeColor: "#B45309", typeBg: "rgba(245,158,11,0.14)", plat: "TikTok", title: "3 erreurs qui tuent ton ROAS", date: "Mar \u00B7 11:00", w: 540, scored: "Score IA 94/100" })),
+                        React.createElement("div", { style: { display: 'flex', gap: 16, marginTop: 24 } }, [['CTR prévu', '7,8 %', '+34 %'], ['Portée', '+128 %', 'vs v1']].map((m, i) => (React.createElement(Sprite, { key: i, start: 0.5 + i * 0.2, end: 6 },
+                            React.createElement(In, { d: 0, dur: 0.4, y: 16, from: 0.85, ease: Easing.easeOutBack },
+                                React.createElement("div", { style: { width: 262, background: WHITE, border: `1px solid ${LINE}`, borderRadius: 14, padding: '18px 20px', boxShadow: '0 8px 24px rgba(15,15,30,0.05)' } },
+                                    React.createElement("div", { style: { fontFamily: MONO, fontSize: 13, letterSpacing: '0.12em', color: MUT, textTransform: 'uppercase' } }, m[0]),
+                                    React.createElement("div", { style: { display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 6, whiteSpace: 'nowrap' } },
+                                        React.createElement("span", { style: { fontFamily: SANS, fontWeight: 600, fontSize: 38, color: INK, whiteSpace: 'nowrap' } }, m[1]),
+                                        React.createElement(ArrowBadge, null, m[2]))))))))))))));
+}
+function FlowArrow() {
+    const { localTime } = useSprite();
+    const d = Easing.easeInOutCubic(clamp(localTime / 1.0, 0, 1));
+    const path = 'M 10 100 C 110 100, 150 60, 250 60';
+    const len = 320;
+    // moving pulse
+    const t = (localTime * 0.7) % 1;
+    const px = 10 + (250 - 10) * t, py = 100 - Math.sin(t * Math.PI) * 40;
+    return (React.createElement("g", null,
+        React.createElement("path", { d: path, fill: "none", stroke: INDIGO, strokeWidth: "3", strokeDasharray: "6 8", strokeLinecap: "round", style: { strokeDashoffset: -(localTime * 30) }, opacity: "0.6" }),
+        React.createElement("path", { d: path, fill: "none", stroke: INDIGO, strokeWidth: "4", strokeLinecap: "round", strokeDasharray: len, strokeDashoffset: (1 - d) * len }),
+        React.createElement("path", { d: "M 244 52 L 256 60 L 244 68", fill: "none", stroke: INDIGO, strokeWidth: "4", strokeLinecap: "round", strokeLinejoin: "round", style: { opacity: d > 0.9 ? 1 : 0 } }),
+        React.createElement("circle", { cx: px, cy: py, r: "7", fill: GREEN })));
+}
+// 5 — LA BOUCLE (24.0 → 27.6) — 3.6s
+function SceneLoop() {
+    return (React.createElement("div", { "data-screen-label": "05 Boucle" },
+        React.createElement(Bg, { color: INK }),
+        React.createElement(DarkBlobs, null),
+        React.createElement(Fade, { inDur: 0.3, outDur: 0.3 },
+            React.createElement("div", { style: { position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' } },
+                React.createElement(In, { d: 0, dur: 0.5, y: 16 },
+                    React.createElement("div", { style: { fontFamily: MONO, fontSize: 22, letterSpacing: '0.2em', color: 'rgba(255,255,255,0.55)', textTransform: 'uppercase', marginBottom: 8 } }, "Le syst\u00E8me Vyrexads")),
+                React.createElement(LoopDiagram, null)))));
+}
+function LoopDiagram() {
+    const { localTime } = useSprite();
+    const cx = 0, cy = 0, R = 250;
+    const nodes = [
+        { ang: -90, label: 'CRÉATION', color: INDIGO },
+        { ang: 30, label: 'ANALYSE', color: WHITE, text: INK },
+        { ang: 150, label: 'AMÉLIORATION', color: GREEN },
+    ];
+    const pos = (ang) => [Math.cos((ang * Math.PI) / 180) * R, Math.sin((ang * Math.PI) / 180) * R];
+    // pulse travels the circle
+    const tt = (localTime * 0.42) % 1;
+    const pang = -90 + tt * 360;
+    const [ppx, ppy] = pos(pang);
+    const ringDraw = Easing.easeInOutCubic(clamp(localTime / 1.1, 0, 1));
+    const C = 2 * Math.PI * R;
+    return (React.createElement("div", { style: { position: 'relative', width: 760, height: 720, marginTop: 20 } },
+        React.createElement("svg", { width: "760", height: "720", viewBox: "-380 -360 760 720", style: { overflow: 'visible' } },
+            React.createElement("circle", { cx: cx, cy: cy, r: R, fill: "none", stroke: "rgba(255,255,255,0.12)", strokeWidth: "2" }),
+            React.createElement("circle", { cx: cx, cy: cy, r: R, fill: "none", stroke: "url(#loopgrad)", strokeWidth: "5", strokeLinecap: "round", strokeDasharray: C, strokeDashoffset: (1 - ringDraw) * C, transform: "rotate(-90)" }),
+            React.createElement("defs", null,
+                React.createElement("linearGradient", { id: "loopgrad", x1: "0", y1: "0", x2: "1", y2: "1" },
+                    React.createElement("stop", { offset: "0", stopColor: INDIGO }),
+                    React.createElement("stop", { offset: "0.5", stopColor: VIOLET }),
+                    React.createElement("stop", { offset: "1", stopColor: GREEN }))),
+            [30, 150, 270].map((a, i) => {
+                const [x, y] = pos(a);
+                return React.createElement("circle", { key: i, cx: x, cy: y, r: "5", fill: "rgba(255,255,255,0.4)", style: { opacity: ringDraw } });
+            }),
+            React.createElement("circle", { cx: ppx, cy: ppy, r: "11", fill: GREEN, style: { opacity: ringDraw, filter: 'drop-shadow(0 0 12px rgba(16,192,121,0.9))' } })),
+        nodes.map((n, i) => { const [x, y] = pos(n.ang); return React.createElement(NodeChip, { key: i, n: n, i: i, x: x, y: y }); }),
+        React.createElement(CenterMark, null)));
+}
+function NodeChip({ n, i, x, y }) {
+    const { time } = useTimeline();
+    const base = React.useContext(SceneBaseContext);
+    const start = 24 - base + (0.5 + i * 0.22) + base; // scene-local start handled below
+    return (React.createElement(Sprite, { start: 0.5 + i * 0.22, end: 3.6 },
+        React.createElement(NodeInner, { n: n, i: i, x: x, y: y })));
+}
+function NodeInner({ n, i, x, y }) {
+    const { localTime } = useSprite();
+    const p = Easing.easeOutBack(clamp(localTime / 0.42, 0, 1));
+    const sc = 0.55 + 0.45 * p;
+    return (React.createElement("div", { style: { position: 'absolute', left: 380 + x, top: 360 + y, transform: `translate(-50%,-50%) scale(${sc})`, opacity: clamp(p, 0, 1) } },
+        React.createElement("div", { style: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 } },
+            React.createElement("div", { style: { width: 84, height: 84, borderRadius: 22, background: n.color, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: `0 12px 34px ${n.color === WHITE ? 'rgba(255,255,255,0.22)' : n.color + '66'}` } },
+                React.createElement("span", { style: { fontFamily: SANS, fontWeight: 700, fontSize: 36, color: n.text || WHITE } }, String(i + 1).padStart(2, '0'))),
+            React.createElement("span", { style: { fontFamily: MONO, fontSize: 20, letterSpacing: '0.12em', color: WHITE, fontWeight: 500, whiteSpace: 'nowrap' } }, n.label))));
+}
+function CenterMark() {
+    return (React.createElement(Sprite, { start: 1.1, end: 3.6 },
+        React.createElement(CenterInner, null)));
+}
+function CenterInner() {
+    const { localTime } = useSprite();
+    const p = Easing.easeOutBack(clamp(localTime / 0.5, 0, 1));
+    const sc = 0.82 + 0.18 * p;
+    return (React.createElement("div", { style: { position: 'absolute', left: 380, top: 360, transform: `translate(-50%,-50%) scale(${sc})`, opacity: clamp(p, 0, 1), textAlign: 'center' } },
+        React.createElement("div", { style: { fontFamily: SANS, fontWeight: 600, fontSize: 42, color: WHITE, letterSpacing: '-0.02em', lineHeight: 1.1 } },
+            "La boucle",
+            React.createElement("br", null),
+            "qui s'optimise")));
+}
+// 6 — CTA (27.6 → 30.0) — 2.4s
+function SceneCTA() {
+    return (React.createElement("div", { "data-screen-label": "06 CTA" },
+        React.createElement(Bg, { color: INK }),
+        React.createElement(DarkBlobs, null),
+        React.createElement(Fade, { inDur: 0.3, outDur: 0.2 },
+            React.createElement("div", { style: { position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' } },
+                React.createElement(In, { d: 0, dur: 0.5, y: 20, from: 0.82, ease: Easing.easeOutBack },
+                    React.createElement(Logo, { size: 120, white: true })),
+                React.createElement(In, { d: 0.25, dur: 0.5, y: 18 },
+                    React.createElement("div", { style: { fontFamily: SANS, fontWeight: 600, fontSize: 64, letterSpacing: '-0.025em', color: WHITE, marginTop: 46, textAlign: 'center', lineHeight: 1.08 } },
+                        "Le marketing qui",
+                        React.createElement("br", null),
+                        "s'am\u00E9liore tout seul.")),
+                React.createElement(In, { d: 0.6, dur: 0.45, y: 16, from: 0.85, ease: Easing.easeOutBack },
+                    React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 14, background: INDIGO, color: WHITE, fontFamily: UI, fontWeight: 600, fontSize: 30, padding: '22px 40px', borderRadius: 14, marginTop: 50, boxShadow: '0 16px 44px rgba(61,61,255,0.45)' } },
+                        "Commencer gratuitement",
+                        React.createElement("svg", { width: "26", height: "26", viewBox: "0 0 24 24", fill: "none" },
+                            React.createElement("path", { d: "M5 12 H19 M13 6 L19 12 L13 18", stroke: WHITE, strokeWidth: "2.4", strokeLinecap: "round", strokeLinejoin: "round" })))),
+                React.createElement(In, { d: 0.85, dur: 0.4 },
+                    React.createElement("div", { style: { fontFamily: MONO, fontSize: 22, letterSpacing: '0.14em', color: 'rgba(255,255,255,0.5)', marginTop: 38 } }, "vyrexads.com"))))));
+}
+// ───────────────────────── Root ─────────────────────────
+function VyrexadsAd() {
+    return (React.createElement(Stage, { width: W, height: H, duration: 30, fps: 60, background: INK, persistKey: "vyrexads-ad" },
+        React.createElement(SceneSlot, { start: 0, end: 4.0 },
+            React.createElement(SceneHook, null)),
+        React.createElement(SceneSlot, { start: 4.0, end: 11.0 },
+            React.createElement(SceneCreate, null)),
+        React.createElement(SceneSlot, { start: 11.0, end: 18.0 },
+            React.createElement(SceneAnalyze, null)),
+        React.createElement(SceneSlot, { start: 18.0, end: 24.0 },
+            React.createElement(SceneImprove, null)),
+        React.createElement(SceneSlot, { start: 24.0, end: 27.6 },
+            React.createElement(SceneLoop, null)),
+        React.createElement(SceneSlot, { start: 27.6, end: 30.0 },
+            React.createElement(SceneCTA, null))));
+}
+// ───────────────────────── Stage (trimmed) ─────────────────────────
+function Stage({ width = 1920, height = 1080, duration = 30, background = '#0B0B10', fps = 60, loop = true, autoplay = true, persistKey = 'vyrexads-ad', children }) {
+    const [time, setTime] = React.useState(() => { try {
+        const v = parseFloat(localStorage.getItem(persistKey + ':t') || '0');
+        return isFinite(v) ? clamp(v, 0, duration) : 0;
+    }
+    catch (_a) {
+        return 0;
+    } });
+    const [playing, setPlaying] = React.useState(autoplay);
+    const [hoverTime, setHoverTime] = React.useState(null);
+    const [scale, setScale] = React.useState(1);
+    const stageRef = React.useRef(null), rafRef = React.useRef(null), lastTsRef = React.useRef(null);
+    React.useEffect(() => { try {
+        localStorage.setItem(persistKey + ':t', String(time));
+    }
+    catch (_a) { } }, [time, persistKey]);
+    React.useEffect(() => {
+        if (!stageRef.current)
+            return;
+        const el = stageRef.current;
+        const measure = () => { const barH = 44; const s = Math.min(el.clientWidth / width, (el.clientHeight - barH) / height); setScale(Math.max(0.05, s)); };
+        measure();
+        const ro = new ResizeObserver(measure);
+        ro.observe(el);
+        window.addEventListener('resize', measure);
+        return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
+    }, [width, height]);
+    React.useEffect(() => {
+        if (!playing) {
+            lastTsRef.current = null;
+            return;
+        }
+        const step = (ts) => {
+            if (lastTsRef.current == null)
+                lastTsRef.current = ts;
+            const dt = (ts - lastTsRef.current) / 1000;
+            lastTsRef.current = ts;
+            setTime((t) => { let n = t + dt; if (n >= duration) {
+                if (loop)
+                    n = n % duration;
+                else {
+                    n = duration;
+                    setPlaying(false);
+                }
+            } return n; });
+            rafRef.current = requestAnimationFrame(step);
+        };
+        rafRef.current = requestAnimationFrame(step);
+        return () => { if (rafRef.current)
+            cancelAnimationFrame(rafRef.current); lastTsRef.current = null; };
+    }, [playing, duration, loop]);
+    React.useEffect(() => {
+        const onKey = (e) => {
+            if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'))
+                return;
+            if (e.code === 'Space') {
+                e.preventDefault();
+                setPlaying(p => !p);
+            }
+            else if (e.code === 'ArrowLeft')
+                setTime(t => clamp(t - (e.shiftKey ? 1 : 0.1), 0, duration));
+            else if (e.code === 'ArrowRight')
+                setTime(t => clamp(t + (e.shiftKey ? 1 : 0.1), 0, duration));
+            else if (e.key === '0' || e.code === 'Home')
+                setTime(0);
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [duration]);
+    const displayTime = hoverTime != null ? hoverTime : time;
+    React.useEffect(() => { window.__vxSeek = (t) => { setPlaying(false); setTime(clamp(t, 0, duration)); }; window.__vxPlay = () => setPlaying(true); }, [duration]);
+    const ctxValue = React.useMemo(() => ({ time: displayTime, duration, playing, setTime, setPlaying }), [displayTime, duration, playing]);
+    return (React.createElement("div", { ref: stageRef, style: { position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', background: '#08080c', fontFamily: UI } },
+        React.createElement("div", { style: { flex: 1, width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', minHeight: 0 } },
+            React.createElement("div", { style: { width, height, background, position: 'relative', transform: `scale(${scale})`, transformOrigin: 'center', flexShrink: 0, boxShadow: '0 20px 60px rgba(0,0,0,0.4)', overflow: 'hidden' } },
+                React.createElement(TimelineContext.Provider, { value: ctxValue }, children))),
+        React.createElement(PlaybackBar, { time: displayTime, duration: duration, playing: playing, onPlayPause: () => setPlaying(p => !p), onReset: () => setTime(0), onSeek: (t) => setTime(t), onHover: (t) => setHoverTime(t) })));
+}
+function PlaybackBar({ time, duration, playing, onPlayPause, onReset, onSeek, onHover }) {
+    const trackRef = React.useRef(null);
+    const [dragging, setDragging] = React.useState(false);
+    const timeFromEvent = React.useCallback((e) => { const r = trackRef.current.getBoundingClientRect(); const x = clamp((e.clientX - r.left) / r.width, 0, 1); return x * duration; }, [duration]);
+    const onTrackMove = (e) => { if (!trackRef.current)
+        return; const t = timeFromEvent(e); dragging ? onSeek(t) : onHover(t); };
+    const onTrackDown = (e) => { setDragging(true); onSeek(timeFromEvent(e)); onHover(null); };
+    React.useEffect(() => {
+        if (!dragging)
+            return;
+        const onUp = () => setDragging(false), onMove = (e) => { if (trackRef.current)
+            onSeek(timeFromEvent(e)); };
+        window.addEventListener('mouseup', onUp);
+        window.addEventListener('mousemove', onMove);
+        return () => { window.removeEventListener('mouseup', onUp); window.removeEventListener('mousemove', onMove); };
+    }, [dragging, timeFromEvent, onSeek]);
+    const pct = duration > 0 ? (time / duration) * 100 : 0;
+    const fmt = (t) => { const tot = Math.max(0, t); const m = Math.floor(tot / 60), s = Math.floor(tot % 60), cs = Math.floor((tot * 100) % 100); return `${m}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`; };
+    return (React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: 12, padding: '8px 16px', background: 'rgba(20,20,24,0.92)', borderTop: '1px solid rgba(255,255,255,0.08)', width: '100%', maxWidth: 680, alignSelf: 'center', borderRadius: 8, color: '#F4F4F7', fontFamily: UI, userSelect: 'none', flexShrink: 0 } },
+        React.createElement(IconBtn, { onClick: onReset },
+            React.createElement("svg", { width: "14", height: "14", viewBox: "0 0 14 14", fill: "none" },
+                React.createElement("path", { d: "M3 2v10M12 2L5 7l7 5V2z", stroke: "currentColor", strokeWidth: "1.5", strokeLinejoin: "round", strokeLinecap: "round" }))),
+        React.createElement(IconBtn, { onClick: onPlayPause }, playing ? React.createElement("svg", { width: "14", height: "14", viewBox: "0 0 14 14" },
+            React.createElement("rect", { x: "3", y: "2", width: "3", height: "10", fill: "currentColor" }),
+            React.createElement("rect", { x: "8", y: "2", width: "3", height: "10", fill: "currentColor" })) : React.createElement("svg", { width: "14", height: "14", viewBox: "0 0 14 14" },
+            React.createElement("path", { d: "M3 2l9 5-9 5V2z", fill: "currentColor" }))),
+        React.createElement("div", { style: { fontFamily: MONO, fontSize: 12, fontVariantNumeric: 'tabular-nums', width: 64, textAlign: 'right' } }, fmt(time)),
+        React.createElement("div", { ref: trackRef, onMouseMove: onTrackMove, onMouseLeave: () => { if (!dragging)
+                onHover(null); }, onMouseDown: onTrackDown, style: { flex: 1, height: 22, position: 'relative', cursor: 'pointer', display: 'flex', alignItems: 'center' } },
+            React.createElement("div", { style: { position: 'absolute', left: 0, right: 0, height: 4, background: 'rgba(255,255,255,0.12)', borderRadius: 2 } }),
+            React.createElement("div", { style: { position: 'absolute', left: 0, width: `${pct}%`, height: 4, background: INDIGO, borderRadius: 2 } }),
+            React.createElement("div", { style: { position: 'absolute', left: `${pct}%`, top: '50%', width: 12, height: 12, marginLeft: -6, marginTop: -6, background: '#fff', borderRadius: 6, boxShadow: '0 2px 4px rgba(0,0,0,0.4)' } })),
+        React.createElement("div", { style: { fontFamily: MONO, fontSize: 12, fontVariantNumeric: 'tabular-nums', width: 64, color: 'rgba(244,244,247,0.55)' } }, fmt(duration))));
+}
+function IconBtn({ children, onClick }) {
+    const [h, setH] = React.useState(false);
+    return React.createElement("button", { onClick: onClick, onMouseEnter: () => setH(true), onMouseLeave: () => setH(false), style: { width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', background: h ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: '#F4F4F7', cursor: 'pointer', padding: 0 } }, children);
+}
+window.VyrexadsAd = VyrexadsAd;
+
+
+(function mountVyrexadsAd() {
+  const rootElement = document.getElementById('root');
+  if (!rootElement) throw new Error('Root element #root introuvable.');
+  if (!window.React || !window.ReactDOM) throw new Error('React ou ReactDOM indisponible. Vérifiez la connexion aux CDN.');
+  ReactDOM.createRoot(rootElement).render(React.createElement(VyrexadsAd));
+})();
+  </script>
+</body>
+</html>
