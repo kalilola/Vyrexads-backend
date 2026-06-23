@@ -333,14 +333,14 @@ function relayRoute(webhookPath: string, timeoutMs = 600_000) {
 }
 
 
-const CLAUDE_IMAGE_MIME_TYPES = new Set([
+const GLM_IMAGE_MIME_TYPES = new Set([
   "image/jpeg",
   "image/png",
   "image/gif",
   "image/webp",
 ]);
 
-const CLAUDE_TEXT_MIME_TYPES = new Set([
+const GLM_TEXT_MIME_TYPES = new Set([
   "image/svg+xml",
   "text/plain",
   "text/markdown",
@@ -380,7 +380,7 @@ async function downloadMotionAdAttachment(row: any) {
   return Buffer.from(arrayBuffer);
 }
 
-async function buildClaudeAttachmentBlocks(rows: any[]) {
+async function buildGLMAttachmentContextBlocks(rows: any[]) {
   const blocks: any[] = [];
 
   if (!rows.length) return blocks;
@@ -408,7 +408,7 @@ async function buildClaudeAttachmentBlocks(rows: any[]) {
 
     const fileBuffer = await downloadMotionAdAttachment(row);
 
-    if (CLAUDE_IMAGE_MIME_TYPES.has(mimeType)) {
+    if (GLM_IMAGE_MIME_TYPES.has(mimeType)) {
       blocks.push({
         type: "image",
         source: {
@@ -426,7 +426,7 @@ async function buildClaudeAttachmentBlocks(rows: any[]) {
       continue;
     }
 
-    if (CLAUDE_TEXT_MIME_TYPES.has(mimeType) || fileName.toLowerCase().endsWith(".svg")) {
+    if (GLM_TEXT_MIME_TYPES.has(mimeType) || fileName.toLowerCase().endsWith(".svg")) {
       const text = fileBuffer.toString("utf8");
 
       blocks.push({
@@ -444,7 +444,7 @@ async function buildClaudeAttachmentBlocks(rows: any[]) {
     blocks.push({
       type: "text",
       text:
-        `Fichier uploadé non directement lisible par Claude : ${fileName}\n` +
+        `Fichier uploadé non directement lisible par GLM : ${fileName}\n` +
         `Type : ${mimeType}\n` +
         `URL publique : ${row.public_url || "non disponible"}\n` +
         `Demande à l'utilisateur de décrire ce fichier si son contenu est important.`,
@@ -487,6 +487,44 @@ function injectAttachmentsIntoLastUserMessage(messages: any[], attachmentBlocks:
   };
 
   return cloned;
+}
+
+
+function normalizeMessagesForGLM(messages: any[]) {
+  return asArray(messages)
+    .map((message: any) => {
+      const role = message?.role === "assistant" ? "assistant" : "user";
+      const content = message?.content;
+
+      if (typeof content === "string") {
+        return { role, content };
+      }
+
+      if (Array.isArray(content)) {
+        const textContent = content
+          .map((block: any) => {
+            if (block?.type === "text") return String(block.text || "");
+            if (block?.type === "image") {
+              return "[Image fournie en pièce jointe. Utilise la description, le nom de fichier ou l'URL publique fournis dans le contexte.]";
+            }
+            return "";
+          })
+          .filter(Boolean)
+          .join("\n\n")
+          .trim();
+
+        return {
+          role,
+          content: textContent || (role === "assistant" ? "Réponse assistant vide." : "Message utilisateur vide."),
+        };
+      }
+
+      return {
+        role,
+        content: String(content || (role === "assistant" ? "Réponse assistant vide." : "Message utilisateur vide.")),
+      };
+    })
+    .filter((message: any) => message.content);
 }
 
 
@@ -873,7 +911,7 @@ function cleanBase64DataUrl(input: string) {
   return commaIndex >= 0 ? value.slice(commaIndex + 1) : value;
 }
 
-function normalizeClaudeOutput(text: string) {
+function normalizeAiOutput(text: string) {
   return String(text || "")
     .replace(/\*\*\s*(\[\/?CODE\])\s*\*\*/g, "$1")
     .replace(/__\s*(\[\/?CODE\])\s*__/g, "$1")
@@ -881,7 +919,7 @@ function normalizeClaudeOutput(text: string) {
 }
 
 function extractCodeBlock(text: string) {
-  const normalized = normalizeClaudeOutput(text);
+  const normalized = normalizeAiOutput(text);
 
   const closedMatch = normalized.match(/\[CODE\]([\s\S]*?)\[\/CODE\]/i);
   if (closedMatch) {
@@ -903,7 +941,7 @@ function extractCodeBlock(text: string) {
 }
 
 function stripCodeBlock(text: string) {
-  const normalized = normalizeClaudeOutput(text);
+  const normalized = normalizeAiOutput(text);
 
   return normalized
     .replace(/\[CODE\][\s\S]*?\[\/CODE\]/gi, "")
@@ -8748,15 +8786,15 @@ app.post("/api/google-ads/sync-all", requireAuth, async (req, res) => {
 
 
 // =========================================================
-// MOTION AD BUILDER — Claude streaming + extended thinking
+// MOTION AD BUILDER — GLM streaming + reasoning
 // =========================================================
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
-if (!ANTHROPIC_API_KEY) console.warn("[env] Missing ANTHROPIC_API_KEY");
+const ZAI_API_KEY = process.env.ZAI_API_KEY || "";
+if (!ZAI_API_KEY) console.warn("[env] Missing ZAI_API_KEY");
 
-const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-4-8";
-const ANTHROPIC_COMPANY_MODEL =
-  process.env.ANTHROPIC_COMPANY_MODEL || ANTHROPIC_MODEL;
+const ZAI_API_BASE_URL = process.env.ZAI_API_BASE_URL || "https://api.z.ai/api/paas/v4";
+const ZAI_MODEL = process.env.ZAI_MODEL || "glm-5.2";
+const ZAI_COMPANY_MODEL = process.env.ZAI_COMPANY_MODEL || ZAI_MODEL;
 
 // =========================================================
 // COMPANY — Suggestions IA d'angles marketing SaaS
@@ -8775,12 +8813,8 @@ type CompanyTargetClientBenefitSuggestion = {
   concreteBenefit: string;
 };
 
-function extractAnthropicText(message: any) {
-  return asArray(message?.content)
-    .map((block) => (block?.type === "text" ? String(block.text || "") : ""))
-    .filter(Boolean)
-    .join("\n")
-    .trim();
+function extractZaiText(response: any) {
+  return String(response?.choices?.[0]?.message?.content || "").trim();
 }
 
 function stripJsonFence(text: string) {
@@ -8858,10 +8892,10 @@ function normalizeCompanyTargetClientBenefits(
 
 app.post("/api/company/marketing-angle-suggestions", requireAuth, async (req, res) => {
   try {
-    if (!ANTHROPIC_API_KEY) {
+    if (!ZAI_API_KEY) {
       return res.status(500).json({
         ok: false,
-        error: "Missing ANTHROPIC_API_KEY in backend env",
+        error: "Missing ZAI_API_KEY in backend env",
       });
     }
 
@@ -8883,7 +8917,7 @@ app.post("/api/company/marketing-angle-suggestions", requireAuth, async (req, re
       .map((item) => item.targetClient)
       .filter(Boolean);
 
-    const contextForClaude = {
+    const contextForGLM = {
       // Marque & description — sans localisation, comme demandé dans la tâche Notion.
       brandName: company.brandName ?? "",
       industry: company.industry ?? "",
@@ -8938,21 +8972,26 @@ Format JSON obligatoire :
     const userPrompt = `Voici le contexte entreprise/offre à analyser. Génère 3 à 6 nouveaux angles marketing pertinents.
 
 Contexte JSON :
-${JSON.stringify(contextForClaude, null, 2)}`;
+${JSON.stringify(contextForGLM, null, 2)}`;
 
-    const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
+    const zaiRes = await fetch(`${ZAI_API_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
+        Authorization: `Bearer ${ZAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: ANTHROPIC_COMPANY_MODEL,
+        model: ZAI_COMPANY_MODEL,
         max_tokens: 4096,
         temperature: 0.45,
-        system: systemPrompt,
+        stream: false,
+        thinking: { type: "disabled" },
+        response_format: { type: "json_object" },
         messages: [
+          {
+            role: "system",
+            content: systemPrompt,
+          },
           {
             role: "user",
             content: userPrompt,
@@ -8961,35 +9000,35 @@ ${JSON.stringify(contextForClaude, null, 2)}`;
       }),
     });
 
-    const anthropicText = await anthropicRes.text();
+    const zaiText = await zaiRes.text();
 
-    if (!anthropicRes.ok) {
-      console.error("[company][marketing-angle-suggestions] Claude error:", anthropicText);
+    if (!zaiRes.ok) {
+      console.error("[company][marketing-angle-suggestions] Z.ai error:", zaiText);
       return res.status(502).json({
         ok: false,
-        error: "Claude request failed",
-        details: anthropicText,
+        error: "Z.ai request failed",
+        details: zaiText,
       });
     }
 
-    let anthropicJson: any = null;
+    let zaiJson: any = null;
     try {
-      anthropicJson = JSON.parse(anthropicText);
+      zaiJson = JSON.parse(zaiText);
     } catch {
       return res.status(502).json({
         ok: false,
-        error: "Claude returned invalid JSON envelope",
-        details: anthropicText,
+        error: "Z.ai returned invalid JSON envelope",
+        details: zaiText,
       });
     }
 
-    const outputText = extractAnthropicText(anthropicJson);
+    const outputText = extractZaiText(zaiJson);
     const parsed = parseJsonObjectFromAiText(outputText);
 
     if (!parsed || typeof parsed !== "object") {
       return res.status(502).json({
         ok: false,
-        error: "Claude output did not contain valid JSON",
+        error: "Z.ai output did not contain valid JSON",
         details: outputText,
       });
     }
@@ -9020,8 +9059,8 @@ ${JSON.stringify(contextForClaude, null, 2)}`;
       company_id,
       marketingAngles,
       targetClientBenefits: generatedTargetClientBenefits,
-      usage: anthropicJson?.usage ?? null,
-      model: anthropicJson?.model ?? ANTHROPIC_COMPANY_MODEL,
+      usage: zaiJson?.usage ?? null,
+      model: zaiJson?.model ?? ZAI_COMPANY_MODEL,
     });
   } catch (e: any) {
     console.error("[company][marketing-angle-suggestions] error:", e);
@@ -9135,7 +9174,7 @@ async function deactivateMotionAdMessagesFromPosition(
   });
 }
 
-function motionDbMessagesToAnthropicMessages(rows: MotionAdDbMessage[]): MotionAdChatMessage[] {
+function motionDbMessagesToGLMMessages(rows: MotionAdDbMessage[]): MotionAdChatMessage[] {
   return rows
     .filter((row) => row.is_active !== false)
     .sort((a, b) => Number(a.position || 0) - Number(b.position || 0))
@@ -10042,27 +10081,17 @@ Inspire-toi de la structure, du rythme, du niveau de polish, des transitions et 
 
 
 
-type ClaudeSystemTextBlock = {
-  type: "text";
-  text: string;
-  cache_control?: { type: "ephemeral" };
-};
-
-function buildMotionAdClaudeSystemBlocks(systemVariable: string): ClaudeSystemTextBlock[] {
+function buildMotionAdGLMSystemPrompt(systemVariable: string) {
   const examples = MOTION_AD_ANIMATION_EXAMPLES.trim();
 
-  if (examples) {
-    return [
-      { type: "text", text: MOTION_AD_BASE_SYSTEM_PROMPT },
-      { type: "text", text: examples, cache_control: { type: "ephemeral" } },
-      { type: "text", text: systemVariable },
-    ];
-  }
-
   return [
-    { type: "text", text: MOTION_AD_BASE_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-    { type: "text", text: systemVariable },
-  ];
+    MOTION_AD_BASE_SYSTEM_PROMPT,
+    examples ? `EXEMPLES D'ANIMATIONS DE RÉFÉRENCE :
+${examples}` : "",
+    systemVariable,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
@@ -10110,7 +10139,7 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
     const systemVariable = `${buildMotionAdSystemContextAppendix(motionCompanyStrategyContext)}
 
 CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format || "non précisé"}, durée demandée = ${requested_motion_duration || requested_duration_seconds || "non précisée"} secondes. Le bloc [META], const DURATION et window.__VYREXADS_DURATION__ doivent utiliser cette durée exacte si elle est précisée.`;
-    const systemForClaude = buildMotionAdClaudeSystemBlocks(systemVariable);
+    const systemForGLM = buildMotionAdGLMSystemPrompt(systemVariable);
 
     if (["9:16", "1:1", "16:9", "4:5"].includes(requested_ad_format) || context_company_id) {
       await supabaseUpsert(
@@ -10188,14 +10217,16 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
 
     const activeRows = await getActiveMotionAdMessages(owner_id, session_id);
     const baseMessages = activeRows.length
-      ? motionDbMessagesToAnthropicMessages(activeRows)
+      ? motionDbMessagesToGLMMessages(activeRows)
       : messages;
 
     const attachmentRows = await getMotionAdAttachmentsForSession(owner_id, session_id);
-    const attachmentBlocks = await buildClaudeAttachmentBlocks(attachmentRows);
-    const anthropicMessages = injectAttachmentsIntoLastUserMessage(baseMessages, attachmentBlocks);
+    const attachmentBlocks = await buildGLMAttachmentContextBlocks(attachmentRows);
+    const glmMessages = normalizeMessagesForGLM(
+      injectAttachmentsIntoLastUserMessage(baseMessages, attachmentBlocks)
+    );
 
-    console.log("[motion-ad][chat] attachments sent to Claude:", {
+    console.log("[motion-ad][chat] attachments sent to GLM:", {
       session_id,
       total_attachments: attachmentRows.length,
       image_blocks: attachmentBlocks.filter((b) => b.type === "image").length,
@@ -10203,36 +10234,41 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
     });
 
 
-    const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
+    const zaiRes = await fetch(`${ZAI_API_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "anthropic-beta": "interleaved-thinking-2025-05-14",
+        Authorization: `Bearer ${ZAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: ANTHROPIC_MODEL,
+        model: ZAI_MODEL,
         max_tokens: 64000,
-        thinking: { type: "enabled", budget_tokens: 16000 },
+        temperature: 1,
         stream: true,
-        system: systemForClaude,
-        messages: anthropicMessages,
+        thinking: { type: "enabled", clear_thinking: true },
+        reasoning_effort: "max",
+        messages: [
+          {
+            role: "system",
+            content: systemForGLM,
+          },
+          ...glmMessages,
+        ],
       }),
     });
 
-    if (!anthropicRes.ok || !anthropicRes.body) {
-      const err = await anthropicRes.text();
+    if (!zaiRes.ok || !zaiRes.body) {
+      const err = await zaiRes.text();
       send("error", { message: err });
       return res.end();
     }
 
     let stopReason: string | null = null;
     let outputTokens: number | null = null;
-    let anthropicUsage: Record<string, unknown> | null = null;
+    let zaiUsage: Record<string, unknown> | null = null;
     
 
-    const reader = anthropicRes.body.getReader();
+    const reader = zaiRes.body.getReader();
     const decoder = new TextDecoder();
 
     let fullThinking = "";
@@ -10240,19 +10276,17 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
     let fullCode = "";
     let sseBuffer = "";
 
-    const handleAnthropicEvent = (evt: any) => {
-      if (evt.type !== "content_block_delta") return;
+    const handleGLMEvent = (evt: any) => {
+      const delta = evt?.choices?.[0]?.delta || {};
 
-      const delta = evt.delta;
-
-      if (delta?.type === "thinking_delta") {
-        const text = delta.thinking || "";
-        fullThinking += text;
-        send("thinking", { text });
+      const thinkingText = String(delta.reasoning_content || "");
+      if (thinkingText) {
+        fullThinking += thinkingText;
+        send("thinking", { text: thinkingText });
       }
 
-      if (delta?.type === "text_delta") {
-        const text = delta.text || "";
+      const text = String(delta.content || "");
+      if (text) {
         fullText += text;
 
         const extracted = extractCodeBlock(fullText);
@@ -10301,7 +10335,11 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
         if (!dataLine) continue;
 
         const raw = dataLine.slice(6).trim();
-        if (!raw || raw === "[DONE]") continue;
+        if (!raw) continue;
+        if (raw === "[DONE]") {
+          stopReason = stopReason || "stop";
+          continue;
+        }
 
         let evt: any;
         try {
@@ -10310,21 +10348,21 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
           continue;
         }
 
-        handleAnthropicEvent(evt);
+        handleGLMEvent(evt);
 
-        if (evt.type === "message_start") {
-          anthropicUsage = evt.message?.usage || anthropicUsage;
+        if (evt.usage) {
+          zaiUsage = { ...(zaiUsage || {}), ...evt.usage };
+          outputTokens =
+            Number(evt.usage?.completion_tokens ?? evt.usage?.output_tokens ?? outputTokens) ||
+            outputTokens;
         }
 
-        if (evt.type === "message_delta") {
-          stopReason = evt.delta?.stop_reason || stopReason;
-          outputTokens = evt.usage?.output_tokens ?? outputTokens;
-          if (evt.usage) {
-            anthropicUsage = { ...(anthropicUsage || {}), ...evt.usage };
-          }
+        const finishReason = evt?.choices?.[0]?.finish_reason || null;
+        if (finishReason) {
+          stopReason = finishReason;
         }
 
-        if (evt.type === "message_stop") {
+        if (finishReason) {
           fullCode = fullCode || extractCodeBlock(fullText);
           const motionDurationSeconds = extractMotionDurationSeconds(
             fullText,
@@ -10374,13 +10412,13 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
                 is_active: true,
                 updated_at: new Date().toISOString(),
                 full_prompt: {
-                  system: systemForClaude,
+                  system: systemForGLM,
                   base_system: system,
                   system_variable: systemVariable,
                   company_id: context_company_id,
                   motion_context_selection,
                   motion_company_strategy_context: motionCompanyStrategyContext,
-                  messages: anthropicMessages,
+                  messages: glmMessages,
                   attachment_ids,
                   question_answers,
                   extracted_questions: finalQuestions,
@@ -10399,9 +10437,8 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
                   debug: {
                     stop_reason: stopReason,
                     output_tokens: outputTokens,
-                    anthropic_usage: anthropicUsage,
-                    cache_creation_input_tokens: Number(anthropicUsage?.cache_creation_input_tokens || 0),
-                    cache_read_input_tokens: Number(anthropicUsage?.cache_read_input_tokens || 0),
+                    zai_usage: zaiUsage,
+                    cached_tokens: Number((zaiUsage as any)?.prompt_tokens_details?.cached_tokens || 0),
                     full_text_length: fullText.length,
                     full_thinking_length: fullThinking.length,
                     full_code_length: fullCode.length,
@@ -10431,8 +10468,7 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
             user_message_id: userMessageId,
             edit_position,
             duration_seconds: motionDurationSeconds,
-            cache_creation_input_tokens: Number(anthropicUsage?.cache_creation_input_tokens || 0),
-            cache_read_input_tokens: Number(anthropicUsage?.cache_read_input_tokens || 0),
+            cached_tokens: Number((zaiUsage as any)?.prompt_tokens_details?.cached_tokens || 0),
           });
 
           return res.end();
