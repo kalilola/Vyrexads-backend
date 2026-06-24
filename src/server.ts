@@ -1021,6 +1021,63 @@ function stripMotionMetaBlock(text: string) {
     .trim();
 }
 
+function normalizeMotionScriptBlock(text: string) {
+  return String(text || "")
+    .replace(/\*\*\s*(\[\/?SCRIPT\])\s*\*\*/gi, "$1")
+    .replace(/__\s*(\[\/?SCRIPT\])\s*__/gi, "$1")
+    .replace(/`+\s*(\[\/?SCRIPT\])\s*`+/gi, "$1")
+    .replace(/\[script\]/gi, "[SCRIPT]")
+    .replace(/\[\/script\]/gi, "[/SCRIPT]");
+}
+
+function normalizeScriptTime(value: any) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.min(300, Math.round(n * 100) / 100);
+}
+
+function extractMotionScriptBlock(text: string) {
+  const normalized = normalizeMotionScriptBlock(text);
+  const match = normalized.match(/\[SCRIPT\]([\s\S]*?)\[\/SCRIPT\]/i);
+  if (!match) return null;
+
+  const raw = match[1]
+    .replace(/^\s*```(?:json)?\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+
+    const cleaned = parsed
+      .map((item: any) => {
+        const start = normalizeScriptTime(item?.start);
+        const end = normalizeScriptTime(item?.end);
+        const text = String(item?.text || "").trim();
+
+        if (start === null || end === null || end <= start || !text) return null;
+
+        return { start, end, text };
+      })
+      .filter(Boolean);
+
+    return cleaned.length > 0 ? cleaned : null;
+  } catch {
+    return null;
+  }
+}
+
+function stripMotionScriptBlock(text: string) {
+  const normalized = normalizeMotionScriptBlock(text);
+
+  return normalized
+    .replace(/\[SCRIPT\][\s\S]*?\[\/SCRIPT\]/gi, "")
+    .replace(/\[SCRIPT\][\s\S]*$/gi, "")
+    .trim();
+}
+
 function normalizeMotionDurationSeconds(value: any) {
   if (value === null || value === undefined || value === "") return null;
   const raw = typeof value === "string" ? value.replace(/s\b/i, "").trim() : value;
@@ -1063,7 +1120,13 @@ function extractMotionDurationSeconds(text: string, code: string, fallback?: any
 }
 
 function stripMotionBuilderBlocks(text: string) {
-  return stripMotionMetaBlock(stripQuestionsBlock(stripCodeBlock(text)));
+  return stripMotionScriptBlock(
+    stripMotionMetaBlock(
+      stripQuestionsBlock(
+        stripCodeBlock(text)
+      )
+    )
+  );
 }
 
 async function updateMotionAdSessionQuestions(params: {
@@ -9097,6 +9160,7 @@ type MotionAdDbMessage = {
   text_content?: string | null;
   thinking_content?: string | null;
   code_snapshot?: string | null;
+  voiceover_script?: any[] | null;
   animation_duration_seconds?: number | null;
   full_prompt?: any;
   created_at?: string;
@@ -10299,6 +10363,11 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
           send("questions", { questions: extractedQuestions });
         }
 
+        const extractedScript = extractMotionScriptBlock(fullText);
+        if (extractedScript) {
+          send("script", { script: extractedScript });
+        }
+
         const visibleText = stripMotionBuilderBlocks(fullText);
 
         send("text", {
@@ -10370,6 +10439,7 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
             requested_motion_duration
           );
           const finalQuestions = extractQuestionsBlock(fullText);
+          const finalVoiceoverScript = extractMotionScriptBlock(fullText);
           const visibleText = stripMotionBuilderBlocks(fullText);
 
           if (finalQuestions.length > 0) {
@@ -10390,6 +10460,10 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
             send("duration", { duration_seconds: motionDurationSeconds });
           }
 
+          if (finalVoiceoverScript) {
+            send("script", { script: finalVoiceoverScript });
+          }
+
           const assistantMessageId = crypto.randomUUID();
           const assistantPosition =
             userMessagePosition !== null
@@ -10407,6 +10481,7 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
                 text_content: visibleText,
                 thinking_content: fullThinking || null,
                 code_snapshot: fullCode || null,
+                voiceover_script: finalVoiceoverScript || null,
                 animation_duration_seconds: motionDurationSeconds,
                 position: assistantPosition,
                 is_active: true,
@@ -10425,6 +10500,7 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
                   edit_position,
                   edited_from_message_id: editedFromMessageId,
                   motion_duration_seconds: motionDurationSeconds,
+                  voiceover_script: finalVoiceoverScript,
                   requested_duration_seconds: requested_motion_duration,
                   attachments: attachmentRows.map((a) => ({
                     id: a.id,
