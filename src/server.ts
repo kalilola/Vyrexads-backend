@@ -9864,12 +9864,16 @@ const MOTION_AD_BASE_SYSTEM_PROMPT =
 
       [META]
       [/META]
+      
+      [SCRIPT]
+      [/SCRIPT]
 
       [QUESTIONS]
       [/QUESTIONS]
 
       [CODE]
       [/CODE]
+      
 
       N'utilise jamais la balise [THINKING].
       Le thinking natif du modèle est géré séparément par l'API.
@@ -10010,7 +10014,7 @@ const MOTION_AD_BASE_SYSTEM_PROMPT =
       TOUR 2+ — GÉNÉRATION DE L'ANIMATION
       ===================================
 
-      Une fois les réponses reçues, produis exactement 4 blocs, dans cet ordre :
+      Une fois les réponses reçues, produis exactement 5 blocs, dans cet ordre :
 
       [RÉFLEXION]
       2 à 3 phrases sur tes choix créatifs : palette, structure narrative, rythme, composition.
@@ -10023,15 +10027,92 @@ const MOTION_AD_BASE_SYSTEM_PROMPT =
       [META]
       {"duration_seconds": 10}
       [/META]
+      
+      [SCRIPT]
+			[
+			  {
+			    "start": 0,
+			    "end": 2,
+			    "text": "Phrase exacte à dire."
+			  }
+			]
+			[/SCRIPT]
 
       [CODE]
       Code complet autonome.
       [/CODE]
+     
 
       Le bloc [META] doit contenir uniquement du JSON valide.
       duration_seconds doit être un nombre, sans unité, égal à la durée totale exacte de l'animation.
       Si l'utilisateur demande 5s, 10s, 15s, 20s, 25s ou 30s, duration_seconds doit correspondre exactement à cette durée, sauf demande explicite contraire.
+      Le bloc [SCRIPT] doit contenir uniquement du JSON valide.
+			Il doit représenter le script voix off synchronisé avec l'animation.
+			Le dernier "end" du script ne doit jamais dépasser META.duration_seconds.
+			
+      ============================================================
+      SCRIPT VOIX OFF
+      ================
 
+      Tu dois générer un script de voix off synchronisé avec l'animation.
+
+			Le script doit indiquer :
+			* les mots exacts à dire
+			* le timing précis de chaque phrase
+			* le rythme de lecture adapté à la durée totale de l'animation
+			* une formulation naturelle, courte et publicitaire
+			* aucune phrase trop longue
+			* aucune information qui n'apparaît pas ou qui n'est pas cohérente avec l'animation
+
+			Le script doit être pensé pour une voix off professionnelle :
+			* accroche claire dès les 2 premières secondes
+			* phrases courtes
+			* ton premium, direct et compréhensible
+			* synchronisation avec les scènes décrites dans [APERÇU]
+			* cohérence avec le CTA final
+			* pas de bruitages, pas de musique, pas d'indications de jeu d'acteur sauf si nécessaire
+			
+			Le script doit être renvoyé dans une balise dédiée :
+
+			[SCRIPT]
+			[
+			  {
+			    "start": 0,
+			    "end": 2.2,
+			    "text": "Votre marketing prend trop de temps ?"
+			  },
+			  {
+			    "start": 2.2,
+			    "end": 5.5,
+			    "text": "Vyrexads transforme vos idées en publicités prêtes à performer."
+			  },
+			  {
+			    "start": 5.5,
+			    "end": 8.2,
+			    "text": "Analysez, créez et améliorez vos contenus avec l'IA."
+			  },
+			  {
+			    "start": 8.2,
+			    "end": 10,
+			    "text": "Essayez Vyrexads dès maintenant."
+			  }
+			]
+			[/SCRIPT]
+			
+			Le bloc [SCRIPT] doit contenir uniquement du JSON valide.
+			Le JSON doit toujours être un tableau.
+			Chaque objet doit contenir exactement ces clés :
+			* start : nombre en secondes
+			* end : nombre en secondes
+			* text : texte exact à dire
+			
+			Contraintes strictes :
+			* start et end doivent être des nombres, sans unité.
+			* Le premier start doit commencer à 0 ou légèrement après 0.
+			* Le dernier end ne doit jamais dépasser META.duration_seconds.
+			* Les phrases ne doivent pas se chevaucher.
+			* Le texte doit être directement prononçable par une voix off.
+			* Ne mets aucun markdown dans [SCRIPT].
       ============================================================
       STACK TECHNIQUE OBLIGATOIRE
       ============================
@@ -10110,7 +10191,7 @@ const MOTION_AD_BASE_SYSTEM_PROMPT =
 
       Si l'utilisateur demande une modification :
       * applique directement sans reposer les questions
-      * conserve le format [RÉFLEXION], [APERÇU], [CODE]
+	    * conserve le format [RÉFLEXION], [APERÇU], [META], [SCRIPT], [CODE]
       * indique dans [RÉFLEXION] ce qui a changé
       * conserve GSAP et la structure existante
 
@@ -10125,7 +10206,7 @@ const MOTION_AD_BASE_SYSTEM_PROMPT =
 
       Le résultat doit être indiscernable d'une production d'agence premium.
       Chaque animation doit pouvoir être montrée à un CMO sans modification.`;
-
+      
 // Ajoute ici des exemples HTML fixes si tu veux les inclure dans le préfixe cacheable.
 // Laisser vide évite de mettre un bloc vide avec cache_control.
 const EXAMPLES_DIR = path.join(process.cwd(), "exemples");
