@@ -10390,7 +10390,7 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
       },
       body: JSON.stringify({
         model: ZAI_MODEL,
-        max_tokens: 32000,
+        max_tokens: 64000,
         temperature: 1,
         stream: true,
         thinking: { type: "enabled", clear_thinking: true },
