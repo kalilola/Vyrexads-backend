@@ -9183,7 +9183,10 @@ async function getActiveMotionAdMessages(owner_id: string, session_id: string) {
   q.set("owner_id", `eq.${owner_id}`);
   q.set("session_id", `eq.${session_id}`);
   q.set("is_active", "eq.true");
-  q.set("select", "*");
+  q.set(
+    "select",
+    "id,session_id,owner_id,role,text_content,code_snapshot,position,is_active,created_at"
+  );
   q.set("order", "position.asc,created_at.asc");
 
   return await supabaseSelect<MotionAdDbMessage>("motion_ad_messages", q);
@@ -9199,7 +9202,7 @@ async function getActiveMotionAdMessageAtPosition(
   q.set("session_id", `eq.${session_id}`);
   q.set("is_active", "eq.true");
   q.set("position", `eq.${position}`);
-  q.set("select", "*");
+  q.set("select", "id,session_id,owner_id,role,text_content,code_snapshot,position,is_active,created_at");
   q.set("limit", "1");
 
   const rows = await supabaseSelect<MotionAdDbMessage>("motion_ad_messages", q);
@@ -9798,7 +9801,7 @@ app.post("/api/motion-ad/upload", requireAuth, async (req, res) => {
 
 
 const MOTION_AD_BASE_SYSTEM_PROMPT = 
- `Tu es Vyrex·Motion, un expert mondial en motion design publicitaire pour SaaS.
+`Tu es Vyrex·Motion, un expert mondial en motion design publicitaire pour SaaS.
       Tu crées des animations HTML/CSS/JS de haute qualité, dignes des meilleures agences créatives mondiales.
       Tu réponds TOUJOURS en français.
 
@@ -10145,7 +10148,7 @@ const MOTION_AD_BASE_SYSTEM_PROMPT =
       La timeline GSAP principale doit toujours être exposée sur window.__VYREXADS_TL__.
       La durée totale doit toujours être exposée sur window.__VYREXADS_DURATION__.
       La valeur de DURATION, window.__VYREXADS_DURATION__ et META.duration_seconds doivent être strictement identiques.
-      La timeline principale ne doit pas dépasser DURATION secondes avant de boucler.
+      La timeline principale ne doit pas dépasser DURATION secondes avant de boucler
 
       ============================================================
       RÈGLES DE MOTION DESIGN
@@ -10387,11 +10390,10 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
       },
       body: JSON.stringify({
         model: ZAI_MODEL,
-        max_tokens: 64000,
+        max_tokens: 16000,
         temperature: 1,
         stream: true,
         thinking: { type: "enabled", clear_thinking: true },
-        reasoning_effort: "max",
         messages: [
           {
             role: "system",
@@ -10416,47 +10418,58 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
     const reader = zaiRes.body.getReader();
     const decoder = new TextDecoder();
 
+    const MAX_STORED_THINKING_CHARS = 100_000;
+    const UI_FLUSH_INTERVAL_MS = 500;
+    const CODE_FLUSH_STEP = 4_096;
+
     let fullThinking = "";
+    let totalThinkingLength = 0;
     let fullText = "";
     let fullCode = "";
     let sseBuffer = "";
+    let lastUiFlushAt = 0;
+    let lastSentCodeLength = 0;
+    let lastQuestionsSignature = "";
+    let lastScriptSignature = "";
 
-    const handleGLMEvent = (evt: any) => {
-      const delta = evt?.choices?.[0]?.delta || {};
+    const flushMotionAdPreview = () => {
+      const now = Date.now();
+      if (now - lastUiFlushAt < UI_FLUSH_INTERVAL_MS) return;
+      lastUiFlushAt = now;
 
-      const thinkingText = String(delta.reasoning_content || "");
-      if (thinkingText) {
-        fullThinking += thinkingText;
-        send("thinking", { text: thinkingText });
-      }
-
-      const text = String(delta.content || "");
-      if (text) {
-        fullText += text;
-
-        const extracted = extractCodeBlock(fullText);
-        if (extracted) {
-          fullCode = extracted;
-        }
-
-        const extractedQuestions = extractQuestionsBlock(fullText);
-        if (extractedQuestions.length > 0) {
+      const extractedQuestions = extractQuestionsBlock(fullText);
+      if (extractedQuestions.length > 0) {
+        const signature = JSON.stringify(extractedQuestions);
+        if (signature !== lastQuestionsSignature) {
+          lastQuestionsSignature = signature;
           send("questions", { questions: extractedQuestions });
         }
+      }
 
-        const extractedScript = extractMotionScriptBlock(fullText);
-        if (extractedScript) {
+      const extractedScript = extractMotionScriptBlock(fullText);
+      if (extractedScript) {
+        const signature = JSON.stringify(extractedScript);
+        if (signature !== lastScriptSignature) {
+          lastScriptSignature = signature;
           send("script", { script: extractedScript });
         }
+      }
 
-        const visibleText = stripMotionBuilderBlocks(fullText);
+      const visibleText = stripMotionBuilderBlocks(fullText);
+      send("text", {
+        text: visibleText,
+        replace: true,
+      });
 
-        send("text", {
-          text: visibleText,
-          replace: true,
-        });
+      const extractedCode = extractCodeBlock(fullText);
+      if (extractedCode) {
+        fullCode = extractedCode;
 
-        if (fullCode) {
+        const shouldSendCode =
+          fullCode.length - lastSentCodeLength >= CODE_FLUSH_STEP;
+
+        if (shouldSendCode) {
+          lastSentCodeLength = fullCode.length;
           const streamDuration = extractMotionDurationSeconds(
             fullText,
             fullCode,
@@ -10465,6 +10478,28 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
           send("code", { html: fullCode, duration_seconds: streamDuration });
           if (streamDuration) send("duration", { duration_seconds: streamDuration });
         }
+      }
+    };
+
+    const handleGLMEvent = (evt: any) => {
+      const delta = evt?.choices?.[0]?.delta || {};
+
+      const thinkingText = String(delta.reasoning_content || "");
+      if (thinkingText) {
+        totalThinkingLength += thinkingText.length;
+
+        const remaining = MAX_STORED_THINKING_CHARS - fullThinking.length;
+        if (remaining > 0) {
+          fullThinking += thinkingText.slice(0, remaining);
+        }
+
+        send("thinking", { text: thinkingText });
+      }
+
+      const text = String(delta.content || "");
+      if (text) {
+        fullText += text;
+        flushMotionAdPreview();
       }
     };
 
@@ -10513,7 +10548,7 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
         }
 
         if (finishReason) {
-          fullCode = fullCode || extractCodeBlock(fullText);
+          fullCode = extractCodeBlock(fullText) || fullCode;
           const motionDurationSeconds = extractMotionDurationSeconds(
             fullText,
             fullCode,
@@ -10522,6 +10557,11 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
           const finalQuestions = extractQuestionsBlock(fullText);
           const finalVoiceoverScript = extractMotionScriptBlock(fullText);
           const visibleText = stripMotionBuilderBlocks(fullText);
+
+          send("text", {
+            text: visibleText,
+            replace: true,
+          });
 
           if (finalQuestions.length > 0) {
             await updateMotionAdSessionQuestions({
@@ -10568,13 +10608,10 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
                 is_active: true,
                 updated_at: new Date().toISOString(),
                 full_prompt: {
-                  system: systemForGLM,
-                  base_system: system,
                   system_variable: systemVariable,
                   company_id: context_company_id,
                   motion_context_selection,
                   motion_company_strategy_context: motionCompanyStrategyContext,
-                  messages: glmMessages,
                   attachment_ids,
                   question_answers,
                   extracted_questions: finalQuestions,
@@ -10597,7 +10634,8 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
                     zai_usage: zaiUsage,
                     cached_tokens: Number((zaiUsage as any)?.prompt_tokens_details?.cached_tokens || 0),
                     full_text_length: fullText.length,
-                    full_thinking_length: fullThinking.length,
+                    full_thinking_length: totalThinkingLength,
+                    stored_thinking_length: fullThinking.length,
                     full_code_length: fullCode.length,
                   },
                   user_message_id: userMessageId,
