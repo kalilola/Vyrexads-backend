@@ -10390,7 +10390,7 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
       },
       body: JSON.stringify({
         model: ZAI_MODEL,
-        max_tokens: 16000,
+        max_tokens: 32000,
         temperature: 1,
         stream: true,
         thinking: { type: "enabled", clear_thinking: true },
@@ -10545,6 +10545,14 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
         const finishReason = evt?.choices?.[0]?.finish_reason || null;
         if (finishReason) {
           stopReason = finishReason;
+          //logs du stop
+          console.log("[motion-ad][chat] GLM finish:", {
+            session_id,
+            finish_reason: finishReason,
+            output_tokens: outputTokens,
+            full_text_length: fullText.length,
+            full_code_length: fullCode.length,
+          });
         }
 
         if (finishReason) {
