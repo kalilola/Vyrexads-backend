@@ -10268,6 +10268,12 @@ app.post("/api/motion-ad/chat", requireAuth, async (req, res) => {
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
 
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded && !res.destroyed) {
+      res.write(`: ping ${Date.now()}\n\n`);
+    }
+  }, 15_000);
+
   const send = (event: string, data: object) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
@@ -10553,10 +10559,31 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
             full_text_length: fullText.length,
             full_code_length: fullCode.length,
           });
+          console.log("[motion-ad][chat] raw output debug:", {
+            has_code_open: /\[CODE\]/i.test(fullText),
+            has_code_close: /\[\/CODE\]/i.test(fullText),
+            full_text_length: fullText.length,
+            tail: fullText.slice(-3000),
+          });
+          
         }
 
         if (finishReason) {
           fullCode = extractCodeBlock(fullText) || fullCode;
+          if (!fullCode) {
+            console.error("[motion-ad][chat] GLM finished without valid [CODE] block", {
+              session_id,
+              finish_reason: stopReason,
+              full_text_length: fullText.length,
+            });
+
+            send("error", {
+              message: "GLM a terminé sa réponse sans fournir de bloc [CODE] valide.",
+              finish_reason: stopReason,
+            });
+
+              return res.end();
+          }
           const motionDurationSeconds = extractMotionDurationSeconds(
             fullText,
             fullCode,
@@ -10667,6 +10694,8 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
 
           send("done", {
             ok: true,
+            finish_reason: stopReason,
+            truncated: stopReason === "length",
             assistant_message_id: assistantMessageId,
             user_message_id: userMessageId,
             edit_position,
@@ -10685,6 +10714,8 @@ CONTRAINTE ACTIVE DE CETTE REQUÊTE : format demandé = ${requested_ad_format ||
     console.error("[motion-ad][chat] error:", e);
     send("error", { message: e?.message || String(e) });
     return res.end();
+  } finally {
+    clearInterval(heartbeat);
   }
 });
 
